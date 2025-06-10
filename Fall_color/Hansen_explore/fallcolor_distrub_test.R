@@ -7,6 +7,7 @@ library(dplyr)
 library(sf)
 library(jsonlite)
 library(readr)
+library(tidyr)
 #----reading in data
 floss.dat <- read_sheet("https://docs.google.com/spreadsheets/d/1glBSZbN2uHsR0PzRiEAV0W1CDGh8kGb_-gQmxT2sVpw/edit?gid=1258618079#gid=1258618079")
 head(floss.dat)
@@ -52,7 +53,7 @@ ggplot(floss.dat, aes(x = Year, y = area_sqm)) +
 theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
 
 #--- read CSV data in 
-flossdvi<-read.csv("~/Google Drive/My Drive/Reidy_research/Hansen exploration/hansen_modis.csv")
+flossdvi<-read.csv("~/Google Drive/My Drive/Reidy_research/Hansen exploration/modis_ndvi_mat_sen_gd50_data.csv")
 head(flossdvi)
 # Rename the "GD202_8" value to "GD2002_8"
 flossdvi$Label[flossdvi$Label == "GD202_8"] <- "GD2002_8"
@@ -193,7 +194,302 @@ ggplot(Fln02, aes(x = Year, y = NDVI)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
  
-# 
+
+ 
+# Graphing senescence, maturity, and growing season
+ #Convert date columns to actual Date format
+ # Read CSV data in 
+
+ 
+ # Convert date columns to actual Date format
+ flossdvi$Maturity_Date <- as.Date(flossdvi$Maturity_Date)
+ flossdvi$Senescence_Date <- as.Date(flossdvi$Senescence_Date)
+ flossdvi$MidGreendown_Date <- as.Date(flossdvi$MidGreendown_Date)
+ # Get unique plot labels
+ unique_labels <- unique(flossdvi$Label)
+ n_plots <- length(unique_labels)
+ 
+ # Set up colors
+ maturity_color <- "green4"
+ midgreendown_color <- "goldenrod2"
+ senescence_color <- "red3"
+ plot_colors <- rainbow(n_plots)
+ 
+ # Option 1: Plot Day of Year by Plot (separate panels)
+ # Calculate panel layout
+ n_cols <- ceiling(sqrt(n_plots))
+ n_rows <- ceiling(n_plots / n_cols)
+ 
+ par(mfrow = c(n_rows, n_cols), mar = c(4, 4, 3, 1))
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   
+   # Create the plot
+   plot(plot_data$Year, plot_data$Maturity_DOY, 
+        type = "n",
+        ylim = range(c(plot_data$Maturity_DOY, plot_data$MidGreendown_DOY, plot_data$Senescence_DOY), na.rm = TRUE),
+        xlim = range(plot_data$Year, na.rm = TRUE),
+        xlab = "Year", 
+        ylab = "Day of Year",
+        main = paste("Phenology -", unique_labels[i]))
+   
+   # Add lines and points for Maturity
+   lines(plot_data$Year, plot_data$Maturity_DOY, col = maturity_color, lwd = 2)
+   points(plot_data$Year, plot_data$Maturity_DOY, col = maturity_color, pch = 16, cex = 1.2)
+   
+   # Add lines and points for MidGreendown
+   lines(plot_data$Year, plot_data$MidGreendown_DOY, col = midgreendown_color, lwd = 2)
+   points(plot_data$Year, plot_data$MidGreendown_DOY, col = midgreendown_color, pch = 16, cex = 1.2)
+   
+   # Add lines and points for Senescence
+   lines(plot_data$Year, plot_data$Senescence_DOY, col = senescence_color, lwd = 2)
+   points(plot_data$Year, plot_data$Senescence_DOY, col = senescence_color, pch = 16, cex = 1.2)
+   
+   # Add trend lines
+   if (sum(!is.na(plot_data$Maturity_DOY)) > 2) {
+     maturity_trend <- lm(Maturity_DOY ~ Year, data = plot_data, na.action = na.exclude)
+     abline(maturity_trend, col = maturity_color, lty = 2, lwd = 1)
+   }
+   
+   if (sum(!is.na(plot_data$MidGreendown_DOY)) > 2) {
+     midgreendown_trend <- lm(MidGreendown_DOY ~ Year, data = plot_data, na.action = na.exclude)
+     abline(midgreendown_trend, col = midgreendown_color, lty = 2, lwd = 1)
+   }
+   
+   if (sum(!is.na(plot_data$Senescence_DOY)) > 2) {
+     senescence_trend <- lm(Senescence_DOY ~ Year, data = plot_data, na.action = na.exclude)
+     abline(senescence_trend, col = senescence_color, lty = 2, lwd = 1)
+   }
+   
+   # Add legend only to first plot
+   if (i == 1) {
+     legend("topright", 
+            legend = c("Maturity", "MidGreendown", "Senescence"), 
+            col = c(maturity_color, midgreendown_color, senescence_color),
+            lwd = 2, pch = 16, cex = 0.8)
+   }
+ }
+ 
+ # Reset plotting parameters
+ par(mfrow = c(1, 1))
+ 
+ # Option 2: All plots on one graph
+ plot(range(flossdvi$Year, na.rm = TRUE), 
+      range(c(flossdvi$Maturity_DOY, flossdvi$MidGreendown_DOY, flossdvi$Senescence_DOY), na.rm = TRUE),
+      type = "n",
+      xlab = "Year", 
+      ylab = "Day of Year",
+      main = "Vegetation Phenology - All Plots")
+ 
+ # Plot each site
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   
+   # Maturity - solid lines
+   lines(plot_data$Year, plot_data$Maturity_DOY, 
+         col = plot_colors[i], lwd = 2, lty = 1)
+   points(plot_data$Year, plot_data$Maturity_DOY, 
+          col = plot_colors[i], pch = 16, cex = 1)
+   
+   # MidGreendown - dotted lines  
+   lines(plot_data$Year, plot_data$MidGreendown_DOY, 
+         col = plot_colors[i], lwd = 2, lty = 3)
+   points(plot_data$Year, plot_data$MidGreendown_DOY, 
+          col = plot_colors[i], pch = 15, cex = 1)
+   
+   # Senescence - dashed lines  
+   lines(plot_data$Year, plot_data$Senescence_DOY, 
+         col = plot_colors[i], lwd = 2, lty = 2)
+   points(plot_data$Year, plot_data$Senescence_DOY, 
+          col = plot_colors[i], pch = 17, cex = 1)
+ }
+ 
+ # Add legend
+ legend("topright", 
+        legend = c(paste(unique_labels, "- Maturity"), 
+                   paste(unique_labels, "- MidGreendown"),
+                   paste(unique_labels, "- Senescence")),
+        col = rep(plot_colors, 3),
+        lty = rep(c(1, 3, 2), each = n_plots),
+        lwd = 2,
+        cex = 0.6,
+        ncol = 1)
+ 
+ # Option 3: Calculate and plot growing season length and decline phases
+ flossdvi$Growing_Season_Length <- flossdvi$Senescence_DOY - flossdvi$Maturity_DOY
+ flossdvi$Early_Decline_Length <- flossdvi$MidGreendown_DOY - flossdvi$Maturity_DOY
+ flossdvi$Late_Decline_Length <- flossdvi$Senescence_DOY - flossdvi$MidGreendown_DOY
+ 
+ # Handle cases where senescence might be in next year
+ flossdvi$Growing_Season_Length[flossdvi$Growing_Season_Length < 0] <- 
+   flossdvi$Growing_Season_Length[flossdvi$Growing_Season_Length < 0] + 365
+ 
+ # Handle negative values for decline phases
+ flossdvi$Early_Decline_Length[flossdvi$Early_Decline_Length < 0] <- 
+   flossdvi$Early_Decline_Length[flossdvi$Early_Decline_Length < 0] + 365
+ flossdvi$Late_Decline_Length[flossdvi$Late_Decline_Length < 0] <- 
+   flossdvi$Late_Decline_Length[flossdvi$Late_Decline_Length < 0] + 365
+ 
+ # Plot growing season length by plot
+ par(mfrow = c(n_rows, n_cols), mar = c(4, 4, 3, 1))
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   
+   plot(plot_data$Year, plot_data$Growing_Season_Length,
+        type = "o",
+        col = plot_colors[i],
+        lwd = 2,
+        pch = 16,
+        xlab = "Year",
+        ylab = "Growing Season Length (Days)",
+        main = paste("Growing Season -", unique_labels[i]))
+   
+   # Add trend line
+   if (sum(!is.na(plot_data$Growing_Season_Length)) > 2) {
+     trend <- lm(Growing_Season_Length ~ Year, data = plot_data, na.action = na.exclude)
+     abline(trend, col = plot_colors[i], lty = 2, lwd = 2)
+   }
+ }
+ 
+ par(mfrow = c(1, 1))
+ 
+ # Option 4: Plot decline phases
+ par(mfrow = c(2, 1), mar = c(4, 4, 3, 1))
+ 
+ # Early decline phase (Maturity to MidGreendown)
+ plot(range(flossdvi$Year, na.rm = TRUE), 
+      range(flossdvi$Early_Decline_Length, na.rm = TRUE),
+      type = "n",
+      xlab = "Year", 
+      ylab = "Early Decline Length (Days)",
+      main = "Early Decline Phase (Maturity to MidGreendown)")
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   lines(plot_data$Year, plot_data$Early_Decline_Length, 
+         col = plot_colors[i], lwd = 2)
+   points(plot_data$Year, plot_data$Early_Decline_Length, 
+          col = plot_colors[i], pch = 16, cex = 1.2)
+ }
+ 
+ legend("topright", legend = unique_labels, col = plot_colors, lwd = 2, pch = 16, cex = 0.8)
+ 
+ # Late decline phase (MidGreendown to Senescence)
+ plot(range(flossdvi$Year, na.rm = TRUE), 
+      range(flossdvi$Late_Decline_Length, na.rm = TRUE),
+      type = "n",
+      xlab = "Year", 
+      ylab = "Late Decline Length (Days)",
+      main = "Late Decline Phase (MidGreendown to Senescence)")
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   lines(plot_data$Year, plot_data$Late_Decline_Length, 
+         col = plot_colors[i], lwd = 2)
+   points(plot_data$Year, plot_data$Late_Decline_Length, 
+          col = plot_colors[i], pch = 16, cex = 1.2)
+ }
+ 
+ legend("topright", legend = unique_labels, col = plot_colors, lwd = 2, pch = 16, cex = 0.8)
+ 
+ par(mfrow = c(1, 1))
+ 
+ # Option 5: Growing season length - all plots together
+ plot(range(flossdvi$Year, na.rm = TRUE), 
+      range(flossdvi$Growing_Season_Length, na.rm = TRUE),
+      type = "n",
+      xlab = "Year", 
+      ylab = "Growing Season Length (Days)",
+      main = "Growing Season Length - All Plots")
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   
+   lines(plot_data$Year, plot_data$Growing_Season_Length, 
+         col = plot_colors[i], lwd = 2)
+   points(plot_data$Year, plot_data$Growing_Season_Length, 
+          col = plot_colors[i], pch = 16, cex = 1.2)
+ }
+ 
+ legend("topright", 
+        legend = unique_labels,
+        col = plot_colors,
+        lwd = 2, pch = 16,
+        cex = 0.8)
+ 
+ # Summary statistics using base R
+ cat("\n=== SUMMARY STATISTICS ===\n\n")
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   
+   cat("Plot:", unique_labels[i], "\n")
+   cat("Maturity DOY - Mean:", round(mean(plot_data$Maturity_DOY, na.rm = TRUE), 1),
+       "SD:", round(sd(plot_data$Maturity_DOY, na.rm = TRUE), 1),
+       "Range:", range(plot_data$Maturity_DOY, na.rm = TRUE), "\n")
+   cat("MidGreendown DOY - Mean:", round(mean(plot_data$MidGreendown_DOY, na.rm = TRUE), 1),
+       "SD:", round(sd(plot_data$MidGreendown_DOY, na.rm = TRUE), 1),
+       "Range:", range(plot_data$MidGreendown_DOY, na.rm = TRUE), "\n")
+   cat("Senescence DOY - Mean:", round(mean(plot_data$Senescence_DOY, na.rm = TRUE), 1),
+       "SD:", round(sd(plot_data$Senescence_DOY, na.rm = TRUE), 1),
+       "Range:", range(plot_data$Senescence_DOY, na.rm = TRUE), "\n")
+   cat("Growing Season Length - Mean:", round(mean(plot_data$Growing_Season_Length, na.rm = TRUE), 1),
+       "SD:", round(sd(plot_data$Growing_Season_Length, na.rm = TRUE), 1), "\n")
+   cat("Early Decline Length - Mean:", round(mean(plot_data$Early_Decline_Length, na.rm = TRUE), 1),
+       "SD:", round(sd(plot_data$Early_Decline_Length, na.rm = TRUE), 1), "\n")
+   cat("Late Decline Length - Mean:", round(mean(plot_data$Late_Decline_Length, na.rm = TRUE), 1),
+       "SD:", round(sd(plot_data$Late_Decline_Length, na.rm = TRUE), 1), "\n")
+   cat("---\n")
+ }
+ 
+ # Calculate correlations with year (to detect trends)
+ cat("\n=== TREND ANALYSIS ===\n\n")
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   
+   cat("Plot:", unique_labels[i], "\n")
+   
+   # Maturity trend
+   if (sum(!is.na(plot_data$Maturity_DOY)) > 3) {
+     mat_cor <- cor(plot_data$Year, plot_data$Maturity_DOY, use = "complete.obs")
+     cat("Maturity trend correlation with year:", round(mat_cor, 3), "\n")
+   }
+   
+   # MidGreendown trend
+   if (sum(!is.na(plot_data$MidGreendown_DOY)) > 3) {
+     mid_cor <- cor(plot_data$Year, plot_data$MidGreendown_DOY, use = "complete.obs")
+     cat("MidGreendown trend correlation with year:", round(mid_cor, 3), "\n")
+   }
+   
+   # Senescence trend  
+   if (sum(!is.na(plot_data$Senescence_DOY)) > 3) {
+     sen_cor <- cor(plot_data$Year, plot_data$Senescence_DOY, use = "complete.obs")
+     cat("Senescence trend correlation with year:", round(sen_cor, 3), "\n")
+   }
+   
+   # Growing season trend
+   if (sum(!is.na(plot_data$Growing_Season_Length)) > 3) {
+     gs_cor <- cor(plot_data$Year, plot_data$Growing_Season_Length, use = "complete.obs")
+     cat("Growing season length correlation with year:", round(gs_cor, 3), "\n")
+   }
+   
+   # Early decline trend
+   if (sum(!is.na(plot_data$Early_Decline_Length)) > 3) {
+     ed_cor <- cor(plot_data$Year, plot_data$Early_Decline_Length, use = "complete.obs")
+     cat("Early decline length correlation with year:", round(ed_cor, 3), "\n")
+   }
+   
+   # Late decline trend
+   if (sum(!is.na(plot_data$Late_Decline_Length)) > 3) {
+     ld_cor <- cor(plot_data$Year, plot_data$Late_Decline_Length, use = "complete.obs")
+     cat("Late decline length correlation with year:", round(ld_cor, 3), "\n")
+   }
+   
+   cat("---\n")
+ }
+ 
 # # 1. Prepare a spatial object of ALL polygons
 # 
 # # Convert .geo to sf objects. Handle potential errors

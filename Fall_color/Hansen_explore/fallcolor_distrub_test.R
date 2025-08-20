@@ -489,143 +489,407 @@ ggplot(Fln02, aes(x = Year, y = NDVI)) +
    
    cat("---\n")
  }
+
  
-# # 1. Prepare a spatial object of ALL polygons
-# 
-# # Convert .geo to sf objects. Handle potential errors
-# polygons_sf <- lapply(floss10.dat$.geo, function(geo_json) {
-#   tryCatch({
-#     st_read(geo_json, quiet = TRUE)
-#   }, error = function(e) {
-#     message(paste("Error reading GeoJSON:", e))
-#     return(NULL) # Or handle the error differently, e.g., skip the polygon
-#   })
-# })
-# 
-# # Remove NULL entries (if any GeoJSON read errors occurred)
-# polygons_sf <- polygons_sf[!sapply(polygons_sf, is.null)]
-# 
-# # Combine all polygons into a single sf object
-# all_polygons_sf <- do.call(rbind, polygons_sf)
-# all_polygons_sf$Label <- floss10.dat$Label # Add the labels back
-# 
-# # 2. Approximate tile grid (without external data)
-# 
-# # Define approximate tile size (degrees) - adjust if needed.  MODIS tiles are roughly 10 degrees.
-# tile_size <- 10
-# 
-# # Get the bounding box of all polygons
-# bbox_all <- st_bbox(all_polygons_sf)
-# 
-# # Calculate the range of latitudes and longitudes
-# lat_range <- bbox_all["ymax"] - bbox_all["ymin"]
-# lon_range <- bbox_all["xmax"] - bbox_all["xmin"]
-# 
-# # Calculate the number of tiles in each direction
-# n_lat_tiles <- ceiling(lat_range / tile_size)
-# n_lon_tiles <- ceiling(lon_range / tile_size)
-# 
-# # Create a data frame to hold tile information
-# unique_tiles <- data.frame(horizontal = integer(), vertical = integer())
-# 
-# for(i in 1:nrow(all_polygons_sf)){
-#   poly <- all_polygons_sf[i,]
-#   
-#   poly_centroid <- st_centroid(poly)
-#   poly_lat <- st_coordinates(poly_centroid)[, "Y"]
-#   poly_lon <- st_coordinates(poly_centroid)[, "X"]
-#   
-#   # Calculate the horizontal and vertical tile indices for the polygon
-#   h_index <- ceiling((poly_lon - bbox_all["xmin"]) / tile_size)
-#   v_index <- ceiling((poly_lat - bbox_all["ymin"]) / tile_size)
-#   
-#   # Add the tile indices to the unique_tiles data frame
-#   unique_tiles <- rbind(unique_tiles, data.frame(horizontal = h_index, vertical = v_index))
-# }
-# 
-# unique_tiles <- unique(unique_tiles)
-# 
-# 
-# # 3. Download data for unique tiles and years
-# 
-# all_ndvi_data <- list()
-# 
-# for (year in 2001:2023) {
-#   for (i in 1:nrow(unique_tiles)) {
-#     h <- unique_tiles$horizontal[i]
-#     v <- unique_tiles$vertical[i]
-#     
-#     tryCatch({
-#       ndvi_data <- mt_subset(
-#         product = "MOD13Q1",
-#         band = "250m_16_days_NDVI",
-#         tile_h = h,
-#         tile_v = v,
-#         start = paste0(year, "-01-01"),
-#         end = paste0(year, "-12-31"),
-#         site_name = paste0("h", h, "v", v), # Unique site name for each tile
-#         internal = TRUE,
-#         progress = TRUE
-#       )
-#       
-#       if (!is.null(ndvi_data) && nrow(ndvi_data) > 0) {
-#         all_ndvi_data <- append(all_ndvi_data, list(ndvi_data))
-#       } else {
-#         message(paste("No MODIS data returned for tile h", h, " v", v, " and year ", year))
-#       }
-#       
-#     }, error = function(e) {
-#       message(paste("Error downloading MODIS data:", e))
-#     })
-#   }
-# }
-# 
-# all_ndvi_data <- dplyr::bind_rows(all_ndvi_data)
-# 
-# # 4. Extract NDVI for each polygon (after download)
-# 
-# # Convert to SpatVector for efficient spatial operations
-# all_ndvi_spatvector <- vect(all_ndvi_data)
-# 
-# # Function to extract NDVI for a single polygon
-# extract_ndvi_from_downloaded <- function(poly_sf, ndvi_spatvector) {
-#   tryCatch({
-#     # Crop the SpatVector to the polygon
-#     cropped_ndvi <- crop(ndvi_spatvector, poly_sf)
-#     
-#     # Convert to dataframe and calculate mean
-#     cropped_ndvi_df <- as.data.frame(cropped_ndvi)
-#     
-#     if(nrow(cropped_ndvi_df) > 0){
-#       cropped_ndvi_df$NDVI <- cropped_ndvi_df$value / as.numeric(cropped_ndvi_df$scale)
-#       
-#       mean_ndvi <- aggregate(NDVI ~ calendar_date, data = cropped_ndvi_df, FUN = mean, na.rm = TRUE)
-#       mean_ndvi$Label <- poly_sf$Label # Add the label
-#       return(mean_ndvi)
-#     } else {
-#       return(data.frame()) # Return empty df if no data
-#     }
-#   }, error = function(e){
-#     message(paste("Error extracting NDVI for polygon:", e))
-#     return(data.frame()) # Return empty df if error
-#   })
-# }
-# 
-# polygon_ndvi_list <- list()
-# for(i in 1:nrow(all_polygons_sf)){
-#   polygon_ndvi <- extract_ndvi_from_downloaded(all_polygons_sf[i,], all_ndvi_spatvector)
-#   polygon_ndvi_list[[i]] <- polygon_ndvi
-# }
-# 
-# polygon_ndvi_df <- dplyr::bind_rows(polygon_ndvi_list)
-# 
-# # ... (Visualization using polygon_ndvi_df) ...
-# 
-# 
-# ggplot(average_ndvi, aes(x = Year, y = mean_NDVI, group = Label, color = Label)) +
-#   geom_line() +
-#   geom_point() +
-#   labs(title = "Average NDVI Time Series per Label", x = "Year", y = "Mean NDVI") +
-#   theme_minimal() +
-#   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-# 
+ 
+ 
+ ###--- Senesence  
+ # Plot MidGreendown only - all plots together
+ plot(range(flossdvi$Year, na.rm = TRUE), 
+      range(flossdvi$MidGreendown_DOY, na.rm = TRUE),
+      type = "n",
+      xlab = "Year", 
+      ylab = "MidGreendown Day of Year",
+      main = "MidGreendown Timing - All Plots")
+ 
+ # Get unique plot labels and colors
+ unique_labels <- unique(flossdvi$Label)
+ n_plots <- length(unique_labels)
+ plot_colors <- rainbow(n_plots)
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   
+   lines(plot_data$Year, plot_data$MidGreendown_DOY, 
+         col = plot_colors[i], lwd = 2)
+   points(plot_data$Year, plot_data$MidGreendown_DOY, 
+          col = plot_colors[i], pch = 16, cex = 1.2)
+   
+   # Add trend line if enough data points
+   if (sum(!is.na(plot_data$MidGreendown_DOY)) > 2) {
+     midgreendown_trend <- lm(MidGreendown_DOY ~ Year, data = plot_data, na.action = na.exclude)
+     abline(midgreendown_trend, col = plot_colors[i], lty = 2, lwd = 1)
+   }
+ }
+ 
+ # Add legend
+ legend("topright", 
+        legend = unique_labels,
+        col = plot_colors,
+        lwd = 2, pch = 16,
+        cex = 0.8)
+
+ 
+ # Individual MidGreendown plots for each label with disturbance year lines
+ unique_labels <- unique(flossdvi$Label)
+ n_plots <- length(unique_labels)
+ 
+ # Function to extract disturbance year from label
+ extract_disturbance_year <- function(label) {
+   # Extract year from labels like "GD2017_11", "GD2015_4", etc.
+   year_match <- regmatches(label, regexpr("\\d{4}", label))
+   if(length(year_match) > 0) {
+     return(as.numeric(year_match))
+   } else {
+     return(NA)
+   }
+ }
+ 
+ # Calculate panel layout
+ n_cols <- ceiling(sqrt(n_plots))
+ n_rows <- ceiling(n_plots / n_cols)
+ 
+ # Set up the plotting layout
+ par(mfrow = c(n_rows, n_cols), mar = c(4, 4, 3, 1))
+ 
+ # Color for MidGreendown
+ midgreendown_color <- "goldenrod2"
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   disturbance_year <- extract_disturbance_year(unique_labels[i])
+   
+   # Create the plot
+   plot(plot_data$Year, plot_data$MidGreendown_DOY, 
+        type = "o",
+        col = midgreendown_color,
+        lwd = 2,
+        pch = 16,
+        cex = 1.2,
+        xlab = "Year", 
+        ylab = "MidGreendown Day of Year",
+        main = paste("MidGreendown -", unique_labels[i]))
+   
+   # Add disturbance year line
+   if (!is.na(disturbance_year)) {
+     abline(v = disturbance_year, col = "red", lty = 1, lwd = 2)
+   }
+   
+   # Add trend line if enough data points
+   if (sum(!is.na(plot_data$MidGreendown_DOY)) > 2) {
+     midgreendown_trend <- lm(MidGreendown_DOY ~ Year, data = plot_data, na.action = na.exclude)
+     abline(midgreendown_trend, col = midgreendown_color, lty = 2, lwd = 2)
+   }
+ }
+ 
+ # Reset plotting parameters
+ par(mfrow = c(1, 1))
+
+ 
+ # Function to extract disturbance year from label
+ extract_disturbance_year <- function(label) {
+   year_match <- regmatches(label, regexpr("\\d{4}", label))
+   if(length(year_match) > 0) {
+     return(as.numeric(year_match))
+   } else {
+     return(NA)
+   }
+ }
+ 
+ # Add disturbance year to the dataset
+ flossdvi$Disturbance_Year <- sapply(flossdvi$Label, extract_disturbance_year)
+ 
+ # Calculate pre-disturbance mean MidGreendown for all plots
+ # Get all pre-disturbance data points
+ pre_disturbance_data <- flossdvi[flossdvi$Year < flossdvi$Disturbance_Year & !is.na(flossdvi$MidGreendown_DOY), ]
+ 
+ # Calculate overall pre-disturbance mean
+ overall_predist_mean <- mean(pre_disturbance_data$MidGreendown_DOY, na.rm = TRUE)
+ 
+ cat("Overall pre-disturbance mean MidGreendown DOY:", round(overall_predist_mean, 1), "\n")
+ 
+ # Individual MidGreendown plots with pre-disturbance mean comparison
+ unique_labels <- unique(flossdvi$Label)
+ n_plots <- length(unique_labels)
+ 
+ # Calculate panel layout
+ n_cols <- ceiling(sqrt(n_plots))
+ n_rows <- ceiling(n_plots / n_cols)
+ 
+ # Set up the plotting layout
+ par(mfrow = c(n_rows, n_cols), mar = c(4, 4, 3, 1))
+ 
+ # Colors
+ midgreendown_color <- "goldenrod2"
+ mean_color <- "blue"
+ disturbance_color <- "red"
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i], ]
+   disturbance_year <- extract_disturbance_year(unique_labels[i])
+   
+   # Create the plot
+   plot(plot_data$Year, plot_data$MidGreendown_DOY, 
+        type = "o",
+        col = midgreendown_color,
+        lwd = 2,
+        pch = 16,
+        cex = 1.2,
+        xlab = "Year", 
+        ylab = "MidGreendown Day of Year",
+        main = paste("MidGreendown -", unique_labels[i]),
+        ylim = range(c(plot_data$MidGreendown_DOY, overall_predist_mean), na.rm = TRUE))
+   
+   # Add horizontal line for overall pre-disturbance mean
+   abline(h = overall_predist_mean, col = mean_color, lty = 1, lwd = 2)
+   
+   # Add disturbance year line
+   if (!is.na(disturbance_year)) {
+     abline(v = disturbance_year, col = disturbance_color, lty = 1, lwd = 2)
+   }
+   
+   # Add trend line if enough data points
+   if (sum(!is.na(plot_data$MidGreendown_DOY)) > 2) {
+     midgreendown_trend <- lm(MidGreendown_DOY ~ Year, data = plot_data, na.action = na.exclude)
+     abline(midgreendown_trend, col = midgreendown_color, lty = 2, lwd = 1)
+   }
+   
+   # Add legend only to first plot
+   if (i == 1) {
+     legend("topright", 
+            legend = c("MidGreendown", "Pre-dist Mean", "Disturbance Year"), 
+            col = c(midgreendown_color, mean_color, disturbance_color),
+            lty = c(1, 1, 1), lwd = 2, cex = 0.7)
+   }
+ }
+ 
+ # Reset plotting parameters
+ par(mfrow = c(1, 1)) 
+ 
+ 
+ # ggplot2 version with pre-disturbance mean comparison
+ ggplot(flossdvi, aes(x = Year, y = MidGreendown_DOY)) +
+   geom_line(color = "goldenrod2", size = 1.2) +
+   geom_point(color = "goldenrod2", size = 2) +
+   geom_smooth(method = "lm", se = FALSE, color = "goldenrod2", linetype = "dashed", size = 0.8) +
+   geom_hline(yintercept = overall_predist_mean, color = "blue", linetype = "solid", size = 1) +
+   geom_vline(aes(xintercept = Disturbance_Year), color = "red", linetype = "solid", size = 1) +
+   facet_wrap(~ Label, scales = "free_x") +
+   labs(title = paste("MidGreendown vs Pre-Disturbance Mean (", round(overall_predist_mean, 1), " DOY)"),
+        x = "Year", 
+        y = "MidGreendown Day of Year") +
+   theme_minimal() +
+   theme(axis.text.x = element_text(angle = 45, hjust = 1),
+         strip.text = element_text(size = 10)) +
+   annotate("text", x = -Inf, y = Inf, 
+            label = paste("Pre-dist mean:", round(overall_predist_mean, 1)), 
+                hjust = -0.1, vjust = 1.1, color = "blue", size = 3)
+
+ # Function to extract disturbance year from label
+ extract_disturbance_year <- function(label) {
+   year_match <- regmatches(label, regexpr("\\d{4}", label))
+   if(length(year_match) > 0) {
+     return(as.numeric(year_match))
+   } else {
+     return(NA)
+   }
+ }
+ 
+ # Add disturbance year to the dataset
+ flossdvi$Disturbance_Year <- sapply(flossdvi$Label, extract_disturbance_year)
+ 
+ # Calculate pre-disturbance mean MidGreendown for all plots
+ pre_disturbance_data <- flossdvi[flossdvi$Year < flossdvi$Disturbance_Year & !is.na(flossdvi$MidGreendown_DOY), ]
+ overall_predist_mean <- mean(pre_disturbance_data$MidGreendown_DOY, na.rm = TRUE)
+ 
+ # Calculate years from disturbance and deviation for each row
+ flossdvi$Years_From_Disturbance <- flossdvi$Year - flossdvi$Disturbance_Year
+ flossdvi$MidGreendown_Deviation <- flossdvi$MidGreendown_DOY - overall_predist_mean
+ 
+ # Individual plots with years from disturbance vs deviation
+ unique_labels <- unique(flossdvi$Label)
+ n_plots <- length(unique_labels)
+ 
+ # Calculate panel layout
+ n_cols <- ceiling(sqrt(n_plots))
+ n_rows <- ceiling(n_plots / n_cols)
+ 
+ # Set up the plotting layout
+ par(mfrow = c(n_rows, n_cols), mar = c(4, 4, 3, 1))
+ 
+ # Colors
+ midgreendown_color <- "goldenrod2"
+ 
+ for (i in 1:n_plots) {
+   plot_data <- flossdvi[flossdvi$Label == unique_labels[i] & !is.na(flossdvi$MidGreendown_Deviation), ]
+   
+   # Create the plot
+   plot(plot_data$Years_From_Disturbance, plot_data$MidGreendown_Deviation, 
+        type = "o",
+        col = midgreendown_color,
+        lwd = 2,
+        pch = 16,
+        cex = 1.2,
+        xlab = "Years from Disturbance", 
+        ylab = "MidGreendown Deviation (Days)",
+        main = paste("MidGreendown Deviation -", unique_labels[i]))
+   
+   # Add horizontal line at zero (no deviation)
+   abline(h = 0, col = "black", lty = 2, lwd = 1)
+   
+   # Add vertical line at disturbance year (year 0)
+   abline(v = 0, col = "red", lty = 1, lwd = 2)
+   
+   # Add trend line if enough data points
+   if (sum(!is.na(plot_data$MidGreendown_Deviation)) > 2) {
+     deviation_trend <- lm(MidGreendown_Deviation ~ Years_From_Disturbance, data = plot_data, na.action = na.exclude)
+     abline(deviation_trend, col = midgreendown_color, lty = 3, lwd = 2)
+   }
+   
+   # Add legend only to first plot
+   if (i == 1) {
+     legend("topright", 
+            legend = c("MidGreendown Dev", "No Deviation", "Disturbance"), 
+            col = c(midgreendown_color, "black", "red"),
+            lty = c(1, 2, 1), lwd = c(2, 1, 2), cex = 0.7)
+   }
+ }
+ 
+ # Reset plotting parameters
+ par(mfrow = c(1, 1))
+ 
+ # ggplot2 version with years from disturbance vs deviation
+ ggplot(flossdvi[!is.na(flossdvi$MidGreendown_Deviation), ], 
+        aes(x = Years_From_Disturbance, y = MidGreendown_Deviation)) +
+   geom_line(color = "goldenrod2", size = 1.2) +
+   geom_point(color = "goldenrod2", size = 2) +
+   geom_smooth(method = "lm", se = FALSE, color = "goldenrod2", linetype = "dotted", size = 1) +
+   geom_hline(yintercept = 0, color = "black", linetype = "dashed", size = 0.8) +
+   geom_vline(xintercept = 0, color = "red", linetype = "solid", size = 1) +
+   facet_wrap(~ Label, scales = "free") +
+   labs(title = paste("MidGreendown Deviation from Pre-Disturbance Mean (", round(overall_predist_mean, 1), " DOY)"),
+        x = "Years from Disturbance", 
+        y = "MidGreendown Deviation (Days)",
+        subtitle = "Positive = Later than normal, Negative = Earlier than normal") +
+   theme_minimal() +
+   theme(axis.text.x = element_text(angle = 45, hjust = 1),
+         strip.text = element_text(size = 10)) 
+ # Function to extract disturbance year from label
+ extract_disturbance_year <- function(label) {
+   year_match <- regmatches(label, regexpr("\\d{4}", label))
+   if(length(year_match) > 0) {
+     return(as.numeric(year_match))
+   } else {
+     return(NA)
+   }
+ }
+ 
+ # Add disturbance year to the dataset
+ flossdvi$Disturbance_Year <- sapply(flossdvi$Label, extract_disturbance_year)
+ 
+ # Calculate pre-disturbance mean MidGreendown for all plots
+ pre_disturbance_data <- flossdvi[flossdvi$Year < flossdvi$Disturbance_Year & !is.na(flossdvi$MidGreendown_DOY), ]
+ overall_predist_mean <- mean(pre_disturbance_data$MidGreendown_DOY, na.rm = TRUE)
+ 
+ # Calculate deviation for each row
+ flossdvi$MidGreendown_Deviation <- flossdvi$MidGreendown_DOY - overall_predist_mean
+ 
+ # Remove rows with missing deviation data
+ plot_data <- flossdvi[!is.na(flossdvi$MidGreendown_Deviation), ]
+ 
+ # Get unique labels and set up colors
+ unique_labels <- unique(plot_data$Label)
+ n_plots <- length(unique_labels)
+ plot_colors <- rainbow(n_plots)
+ 
+ # Create single plot with all labels
+ plot(range(plot_data$Year, na.rm = TRUE), 
+      range(plot_data$MidGreendown_Deviation, na.rm = TRUE),
+      type = "n",
+      xlab = "Year", 
+      ylab = "MidGreendown Deviation (Days)",
+      main = paste("MidGreendown Deviation from Pre-Disturbance Mean -", round(overall_predist_mean, 1), "DOY"))
+ 
+ # Add horizontal line at zero (no deviation)
+ abline(h = 0, col = "black", lty = 2, lwd = 2)
+ 
+ # Plot each label
+ for (i in 1:n_plots) {
+   label_data <- plot_data[plot_data$Label == unique_labels[i], ]
+   disturbance_year <- unique(label_data$Disturbance_Year)[1]
+   
+   # Sort by year for proper line connections
+   label_data <- label_data[order(label_data$Year), ]
+   
+   # Plot lines and points
+   lines(label_data$Year, label_data$MidGreendown_Deviation, 
+         col = plot_colors[i], lwd = 2)
+   points(label_data$Year, label_data$MidGreendown_Deviation, 
+          col = plot_colors[i], pch = 16, cex = 1.2)
+   
+   # Add vertical line for disturbance year for this label
+   if (!is.na(disturbance_year)) {
+     abline(v = disturbance_year, col = plot_colors[i], lty = 3, lwd = 1)
+   }
+ }
+ 
+ # Add legend
+ legend("topright", 
+        legend = unique_labels,
+        col = plot_colors,
+        lwd = 2, pch = 16,
+        cex = 0.8)
+ 
+ # Add reference line legend
+ legend("topleft",
+        legend = "No Deviation",
+        col = "black",
+        lty = 2,
+        lwd = 2,
+        cex = 0.8)
+ 
+ # ggplot2 version - all labels on single plot with actual years
+ ggplot(flossdvi[!is.na(flossdvi$MidGreendown_Deviation), ], 
+        aes(x = Year, y = MidGreendown_Deviation, color = Label)) +
+   geom_line(size = 1.2) +
+   geom_point(size = 2) +
+   geom_hline(yintercept = 0, color = "black", linetype = "dashed", size = 1) +
+   geom_vline(aes(xintercept = Disturbance_Year, color = Label), linetype = "dotted", size = 1, alpha = 0.7) +
+   labs(title = paste("MidGreendown Deviation from Pre-Disturbance Mean (", round(overall_predist_mean, 1), " DOY)"),
+        x = "Year", 
+        y = "MidGreendown Deviation (Days)",
+        subtitle = "Positive = Later than normal, Negative = Earlier than normal. Dotted lines = disturbance years",
+        color = "Plot") +
+   theme_minimal() +
+   theme(legend.position = "right") +
+   guides(color = guide_legend(override.aes = list(size = 3)))
+ 
+ 
+ # Filter data to include only years within reasonable range of disturbance
+ plot_data <- flossdvi[!is.na(flossdvi$MidGreendown_Deviation) & 
+                         abs(flossdvi$Years_From_Disturbance) <= 10, ]
+ 
+ # Create the ggplot
+ ggplot(plot_data, aes(x = Years_From_Disturbance, y = MidGreendown_Deviation, color = Label)) +
+   geom_line(size = 1.2, alpha = 0.8) +
+   geom_point(size = 2.5, alpha = 0.9) +
+   geom_hline(yintercept = 0, color = "black", linetype = "dashed", size = 1) +
+   geom_vline(xintercept = 0, color = "red", linetype = "solid", size = 1.5, alpha = 0.7) +
+   scale_x_continuous(breaks = seq(-10, 10, 1), 
+                      minor_breaks = NULL,
+                      limits = c(-3, 3)) +  # Adjust limits as needed
+   labs(title = paste("MidGreendown Deviation Relative to Disturbance Year"),
+        subtitle = paste("Baseline: Pre-disturbance mean =", round(overall_predist_mean, 1), "DOY"),
+        x = "Years Relative to Disturbance (0 = Disturbance Year)", 
+        y = "MidGreendown Deviation (Days)",
+        color = "Plot ID",
+        caption = "Positive values = Later than normal | Negative values = Earlier than normal") +
+   theme_minimal() +
+   theme(legend.position = "right",
+         panel.grid.major.x = element_line(color = "gray90", size = 0.5),
+         panel.grid.minor.x = element_blank(),
+         axis.text.x = element_text(size = 10),
+         plot.title = element_text(size = 14, face = "bold"),
+         plot.subtitle = element_text(size = 11)) +
+   guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+ 
+ 

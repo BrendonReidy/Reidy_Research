@@ -6,7 +6,7 @@ dat.lme <- flossdvi[abs(flossdvi$Years_From_Disturbance) <= 3 &
                        !is.na(flossdvi$MidGreendown_DOY) & 
                        !is.na(flossdvi$Years_From_Disturbance), ]
 
-# Check the data structure
+# Check data structure to make sure there aren't glaring errors 
 str(flossdvi[, c("Year", "Label", "MidGreendown_DOY", "Disturbance_Year", "Years_From_Disturbance")])
 
 # Check sample sizes to ensure there are an equal number of labels (sample size) and no .Na values 

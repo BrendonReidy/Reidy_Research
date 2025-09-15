@@ -2,14 +2,14 @@ library(nlme)
 library(MuMIn)  # for R-squared calculations
 
 # Load the main analysis
-source("hansen_disturbence_explore.R")
+source("hansen_distubence_explore.R")
 #filter data for +/- 3 years 
-dat.lme <- flossdvi[abs(flossdvi$Years_From_Disturbance) <= 3 & 
+dat.lme <- flossdvi[abs(flossdvi$yrfromdisturb) <= 3 & 
                        !is.na(flossdvi$MidGreendown_DOY) & 
-                       !is.na(flossdvi$Years_From_Disturbance), ]
+                       !is.na(flossdvi$yrfromdisturb), ]
 
 # Check data structure to make sure there aren't glaring errors 
-str(flossdvi[, c("Year", "Label", "MidGreendown_DOY", "dstrbyr ", "Years_From_Disturbance")])
+str(flossdvi[, c("Year", "Label", "MidGreendown_DOY", "dstrbyr", "yrfromdisturb")])
 
 # Check sample sizes to ensure there are an equal number of labels (sample size) and no .Na values 
 length(unique(flossdvi$Label))
@@ -17,10 +17,10 @@ table(flossdvi$Label)
 sum(is.na(flossdvi$MidGreendown_DOY))
 
 # Look at the range of Years_From_Disturbance
-range(flossdvi$Years_From_Disturbance, na.rm = TRUE)
+range(flossdvi$yrfromdisturb, na.rm = TRUE)
 
 #Model accounting for weather and site as a random effect
-lmemod <- lme(MidGreendown_DOY ~ Years_From_Disturbance, random = list(Year = ~1, Label = ~1), data = dat.lme)
+lmemod <- lme(MidGreendown_DOY ~ yrfromdisturb, random = list(Year = ~1, Label = ~1), data = dat.lme)
 
 #testing for signifigance
 summary(lmemod)
@@ -29,7 +29,7 @@ anova(lmemod)
 #aaaannnnd there does not seem to be
 
 #model for just weather 'oops all weather'
-lmemodwe <- lme(MidGreendown_DOY ~ Years_From_Disturbance,random = ~1|Year, data = dat.lme)
+lmemodwe <- lme(MidGreendown_DOY ~ yrfromdisturb,random = ~1|Year, data = dat.lme)
 
 # signif testing
 summary(lmemodwe)
@@ -39,10 +39,11 @@ anova(lmemodwe)
 # again no signifigance 
 
 #model for just site 'oops all sites'
-lmemodsit <- lme(MidGreendown_DOY ~ Years_From_Disturbance, random = ~1|Label, data = dat.lme)
+lmemodsit <- lme(MidGreendown_DOY ~ yrfromdisturb, random = ~1|Label, data = dat.lme)
 
 summary(lmemodsit)
 r.squaredGLMM(lmemodsit)
 anova(lmemodsit)
 
 #three strikes
+("you're out")

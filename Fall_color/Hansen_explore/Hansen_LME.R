@@ -34,7 +34,7 @@ summary(lmemodwe)
 r.squaredGLMM(lmemodwe)
 anova(lmemodwe)
 
-# again no to signifigance 
+# again no signifigance 
 
 #model for just site 'oops all sites'
 lmemodsit <- lme(MidGreendown_DOY ~ Years_From_Disturbance, random = ~1|Label, data = dat.lme)
@@ -43,4 +43,4 @@ summary(lmemodsit)
 r.squaredGLMM(lmemodsit)
 anova(lmemodsit)
 
-#th
+#three strikes

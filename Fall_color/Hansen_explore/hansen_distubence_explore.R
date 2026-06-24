@@ -7,22 +7,51 @@ library(sf)
 library(jsonlite)
 library(readr)
 library(tidyr)
+library(openxlsx)
+path.google <- "~/Google Drive/My Drive" # Mac
+path.dat <- file.path(path.google,"/Reidy_research/Hansen exploration")
 
-# Read forest loss data
-floss.dat <- read_sheet("https://docs.google.com/spreadsheets/d/1glBSZbN2uHsR0PzRiEAV0W1CDGh8kGb_-gQmxT2sVpw/edit?gid=1258618079#gid=1258618079")
+# Read in the CSV
+floss.dat <- read.csv("forest_loss_polygons.csv")
+head(floss.dat)
 
-# Clean year data
+
+
+#Create the Year column from the label value, this is how hansens stores the year of loss
+floss.dat$Year <- floss.dat$label
+
+# Sort by area 
+floss.dat <- floss.dat[order(floss.dat$area_sqm, decreasing = TRUE), ]
+
+#  Create the Label column in format GDyyyy_n
+# to create the whole year add 2000 to the year column
+floss.dat$FullYear <- floss.dat$Year + 2000
+
+# Add row number for the label suffix
+floss.dat$RowNum <- 1:nrow(floss.dat)
+
+# Create the Label: GD + year + _ + row number
+floss.dat$Label <- paste0("GD", floss.dat$FullYear, "_", floss.dat$RowNum)
+
+#subset for only the columns we want
+floss.dat <- floss.dat[, c("Label", "FullYear", ".geo", "latitude", "longitude", "area_sqm","system:index")]
+
+#rename the FullYear column to year
+names(floss.dat)[names(floss.dat) == "FullYear"] <- "Year"
+
+# Set year as a numeric
 floss.dat$Year <- as.numeric(floss.dat$Year)
-floss.dat$Year <- ifelse(floss.dat$Year < 10, paste0("200", floss.dat$Year), paste0("20", floss.dat$Year))
 
 # Get top 10 largest areas
-floss10_dat <- floss.dat[order(floss.dat$area_sqm, decreasing = TRUE), ][1:10, ]
+flossten_dat <- floss.dat[order(floss.dat$area_sqm, decreasing = TRUE), ][1:10, ]
 
+ 
 # Convert year to factor for plotting
 floss.dat$Year <- as.factor(floss.dat$Year)
 floss.dat$area_sqm <- as.numeric(floss.dat$area_sqm)
 
 # Area distribution histogram
+ 
 ggplot(floss.dat, aes(x = area_sqm)) +
   geom_histogram(bins = 30, fill = "blue", color = "black") +
   labs(title = "Distribution of Area (sq m)", x = "Area (sq m)", y = "Frequency") +

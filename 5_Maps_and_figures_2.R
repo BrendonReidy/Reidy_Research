@@ -218,6 +218,25 @@ cat(sprintf('Maps saved to %s/:\n', outputDir),
 
 ndvi_long <- read.csv(file.path(outputDir, 'ndvi_yearly_july_by_patch.csv'))
 
+# <-- FIX: every figure in this project that touches NDVI has captioned
+# itself "Patches >= 25 ha only (MODIS-resolvable filter, see Step 4)" --
+# but that filter was never actually enforced anywhere. Confirmed directly:
+# ndvi_long contains 114,095 distinct patches with area down to 0.12 ha,
+# not the 615 patches that actually meet area_ha >= 25 in patch_attrs. Step
+# 4's CSV export was apparently never restricted by area at the source, so
+# every NDVI figure built so far (Part C's trajectory, Part E's histograms
+# and normalized trajectory, Part G's models) was silently drawing on the
+# full, unfiltered catalog -- including many sub-MODIS-pixel patches whose
+# July NDVI is heavily diluted by whatever's in the surrounding
+# neighborhood, not a clean signal from the patch itself. Enforcing the
+# filter HERE, right at load, means the fix propagates to every part of
+# the script that uses ndvi_long downstream, rather than needing to patch
+# each usage site separately.
+ndvi_long <- ndvi_long %>%
+  select(-any_of('area_ha')) %>%
+  left_join(patch_attrs %>% select(patch_uuid, area_ha), by = 'patch_uuid') %>%
+  filter(area_ha >= 25)
+
 # Drop rows with no valid NDVI (ndvi_july_count == 0 -> ndvi_july_mean is NA,
 # per the fix in Step 4 that guarantees the column exists even when blank).
 ndvi_long <- ndvi_long %>% filter(!is.na(ndvi_july_mean))
@@ -729,7 +748,7 @@ cat(sprintf('Part E figures saved to %s/:\n', outputDir),
     '  hist_midgreendown_shift.png\n')
 
 # =============================================================================
-#---PART F — Deeper Senescence-Timing Analyses
+# PART F — Deeper Senescence-Timing Analyses
 # =============================================================================
 # F1: regional (climate) reference comparison -- needs Step 4c's output
 # F2: patch's own pre-disturbance TREND (not just flat mean) as baseline

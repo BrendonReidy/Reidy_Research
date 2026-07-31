@@ -1913,7 +1913,7 @@ extract_key_rows <- function(fit, response_label, check_type, term_pattern) {
 
 severity_results <- bind_rows(
   extract_key_rows(fit_pheno_severity, 'midgreendown_doy_mean',
-                   'Independent test (non-circular)', 'post:abs_ndvi_change'),
+                   'Independent test (non-circular)', 'post.*abs_ndvi_change'),
   extract_key_rows(fit_ndvi_severity, 'ndvi_july_mean',
                    'DESCRIPTIVE ONLY (circular -- severity defined from same response)',
                    'post.*severity_tercile')

@@ -38,6 +38,19 @@
 #          diagnostics -- includes the robustness check that found NDVI's
 #          size-effect holds up but MidGreendown's does not (hinges on a
 #          single ordinary patch). See Part H's header for the full story.
+# Part I — Disaggregates Part G's binary pre/post into individual years
+#          (-5 to +5) as a factor, so a delayed or strengthening effect
+#          isn't hidden by averaging all post-years together. Includes a
+#          simple one-way ANOVA + Tukey HSD, the equivalent mixed-model
+#          ANOVA, per-year effect-size plots, and a superimposed epoch
+#          analysis (SEA) for both NDVI and MidGreendown.
+# Part J — Does the MAGNITUDE of NDVI loss (rather than patch area, per
+#          Part H) moderate the effect? Built as a genuine, non-circular
+#          continuous interaction for MidGreendown; built as a clearly-
+#          flagged DESCRIPTIVE-ONLY severity-tercile check for NDVI itself,
+#          since using NDVI's own change to moderate NDVI would be
+#          circular. See Part J's header for why these are treated
+#          differently.
 #
 # "Before" = NLCD forest cover extent / Hansen treecover2000, i.e. what was
 #            there before disturbance.
@@ -1419,8 +1432,8 @@ p_resid_ndvi <- ggplot(ndvi_diag, aes(x = fit_val, y = resid_val)) +
   geom_point(alpha = 0.15, color = 'steelblue', shape = 1) +
   geom_hline(yintercept = 0, color = 'black') +
   labs(title = 'Residuals vs Fitted: NDVI Size-Interaction Model',
-       subtitle = paste0('low-fitted-value cluster ( < 0.75)  much wider\n',
-                         'spread (+/- 0.3-0.4) than the main cloud.'),
+       subtitle = paste0('A visually distinct low-fitted-value cluster (fitted < 0.75) shows much wider\n',
+                         'spread (+/- 0.3-0.4) than the main cloud -- flagged and excluded below.'),
        x = 'Fitted value', y = 'Pearson residual') +
   theme_minimal()
 
@@ -1467,7 +1480,9 @@ p_resid_pheno <- ggplot(pheno_diag, aes(x = fit_val, y = resid_val)) +
   geom_point(alpha = 0.15, color = 'darkorange', shape = 1) +
   geom_hline(yintercept = 0, color = 'black') +
   labs(title = 'Residuals vs Fitted: MidGreendown Size-Interaction Model',
-       subtitle = paste0('a single continuous cloud with a mild funnel.'),
+       subtitle = paste0('No visually distinct second cluster (unlike NDVI) -- a single continuous\n',
+                         'cloud with a mild funnel. Concern here is individual high-leverage points,\n',
+                         'identified via Cook\'s distance below, not a subgroup.'),
        x = 'Fitted value', y = 'Pearson residual') +
   theme_minimal()
 
@@ -1554,3 +1569,359 @@ cat('Part H results saved to', outputDir, ':\n',
     '  cooks_distance_midgreendown_by_patch.csv\n',
     '  size_interaction_robustness_results.csv\n\n')
 print(size_interaction_results)
+
+# =============================================================================
+# PART I — Year-by-Year Disturbance Effect (-5 to +5), Not Just Pre/Post
+# =============================================================================
+# Part G's "post" variable was a single TRUE/FALSE indicator, pooling ALL
+# post-loss years together. That can hide a real effect that only emerges
+# a few years out -- if, say, MidGreendown doesn't shift in year+1 but does
+# by year+3, lumping them into one flat "post" average dilutes the year+3
+# signal with the null year+1 signal, and could be part of why some of
+# Part G/H's results were weaker or more fragile than expected.
+#
+# This section replaces the binary "post" with a categorical FACTOR:
+#   - "pre"    = years_since_loss -5 through -1, pooled into one reference
+#                level (matching the project's existing convention of a
+#                multi-year pre-disturbance baseline elsewhere)
+#   - "post_1" through "post_5" = each individual year after disturbance,
+#                kept SEPARATE rather than pooled, so a delayed or
+#                strengthening effect is visible year by year instead of
+#                averaged away.
+# Years beyond +/-5 and the transition year itself (years_since_loss == 0)
+# are excluded, matching this specific -5..+5 window.
+#
+# Three complementary views of the same restructured data, per your
+# request:
+#   1. A "straight ANOVA" -- both a simple one-way aov() ignoring the
+#      patch/year structure (a classic means comparison across periods,
+#      with Tukey HSD for pairwise comparisons), AND the equivalent overall
+#      F-test from the proper mixed model (anova() on the lmer fit), so you
+#      can see whether accounting for patch/year random effects changes the
+#      simple picture.
+#   2. The mixed model itself, with "period" as a factor -- gives one
+#      coefficient (and p-value) per individual post-year, relative to the
+#      pooled pre-baseline.
+#   3. A superimposed epoch analysis (SEA) plot -- the classic event-study
+#      technique of aligning every patch's series on relative time and
+#      plotting the mean +/- 95% CI at each relative-time step. This is
+#      conceptually the same idea as Parts C/D's pooled trajectories, but
+#      restricted to this -5..+5 window and paired directly with the
+#      factor model's significance results (points are marked when that
+#      year is statistically different from pooled pre-disturbance).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# I1. Build the period factor for both response variables
+# -----------------------------------------------------------------------------
+build_period_factor <- function(data) {
+  data %>%
+    filter(years_since_loss %in% c(-5:-1, 1:5)) %>%
+    mutate(period = case_when(
+      years_since_loss %in% -5:-1 ~ 'pre',
+      years_since_loss == 1        ~ 'post_1',
+      years_since_loss == 2        ~ 'post_2',
+      years_since_loss == 3        ~ 'post_3',
+      years_since_loss == 4        ~ 'post_4',
+      years_since_loss == 5        ~ 'post_5'
+    )) %>%
+    mutate(period = factor(period,
+                           levels = c('pre', 'post_1', 'post_2', 'post_3', 'post_4', 'post_5')))
+}
+
+model_data_ndvi_period  <- build_period_factor(model_data_ndvi)
+model_data_pheno_period <- build_period_factor(model_data_pheno)
+
+# -----------------------------------------------------------------------------
+# I2. Mixed model with "period" as a factor (one coefficient per post-year,
+#     vs. pooled pre-disturbance) + the overall ANOVA F-test on that factor
+# -----------------------------------------------------------------------------
+fit_ndvi_period <- lmerTest::lmer(
+  ndvi_july_mean ~ period + (1 | patch_uuid) + (1 | year),
+  data = model_data_ndvi_period
+)
+fit_pheno_period <- lmerTest::lmer(
+  midgreendown_doy_mean ~ period + (1 | patch_uuid) + (1 | year),
+  data = model_data_pheno_period
+)
+
+anova_ndvi_period_mixed  <- anova(fit_ndvi_period)
+anova_pheno_period_mixed <- anova(fit_pheno_period)
+
+cat('Mixed-model overall F-test for "period" factor -- NDVI:\n')
+print(anova_ndvi_period_mixed)
+cat('\nMixed-model overall F-test for "period" factor -- MidGreendown:\n')
+print(anova_pheno_period_mixed)
+
+# -----------------------------------------------------------------------------
+# I3. "Straight" one-way ANOVA (ignoring patch/year random effects) + Tukey
+#     HSD pairwise comparisons -- the simpler, classical means-test version
+# -----------------------------------------------------------------------------
+aov_ndvi_period <- aov(ndvi_july_mean ~ period, data = model_data_ndvi_period)
+aov_pheno_period <- aov(midgreendown_doy_mean ~ period, data = model_data_pheno_period)
+
+cat('\n\nSimple one-way ANOVA (no random effects) -- NDVI:\n')
+print(summary(aov_ndvi_period))
+cat('\nTukey HSD pairwise comparisons -- NDVI:\n')
+print(TukeyHSD(aov_ndvi_period))
+
+cat('\n\nSimple one-way ANOVA (no random effects) -- MidGreendown:\n')
+print(summary(aov_pheno_period))
+cat('\nTukey HSD pairwise comparisons -- MidGreendown:\n')
+print(TukeyHSD(aov_pheno_period))
+
+# Save the Tukey tables to CSV for reference
+write.csv(as.data.frame(TukeyHSD(aov_ndvi_period)$period),
+          file.path(outputDir, 'tukey_hsd_ndvi_period.csv'))
+write.csv(as.data.frame(TukeyHSD(aov_pheno_period)$period),
+          file.path(outputDir, 'tukey_hsd_midgreendown_period.csv'))
+
+# -----------------------------------------------------------------------------
+# I4. Tidy per-period coefficients from the MIXED model (the version that
+#     controls for patch + year), for both plotting and CSV export
+# -----------------------------------------------------------------------------
+extract_period_coefs <- function(fit, response_label) {
+  co <- summary(fit)$coefficients
+  rows <- rownames(co)[rownames(co) != '(Intercept)']
+  tibble(
+    response    = response_label,
+    period      = gsub('^period', '', rows),
+    estimate    = co[rows, 'Estimate'],
+    std_error   = co[rows, 'Std. Error'],
+    p_value     = co[rows, 'Pr(>|t|)'],
+    significant = co[rows, 'Pr(>|t|)'] < 0.05
+  )
+}
+
+period_results <- bind_rows(
+  extract_period_coefs(fit_ndvi_period, 'ndvi_july_mean'),
+  extract_period_coefs(fit_pheno_period, 'midgreendown_doy_mean')
+)
+
+write.csv(period_results, file.path(outputDir, 'period_factor_model_results.csv'), row.names = FALSE)
+cat('\n\nPer-period estimates (vs. pooled pre-disturbance baseline), mixed model:\n')
+print(period_results)
+
+# -----------------------------------------------------------------------------
+# I5. Forest-plot of per-year estimates -- directly shows whether the effect
+#     is present immediately, or builds/strengthens over the post-loss years
+# -----------------------------------------------------------------------------
+plot_period_effects <- function(results_df, response_label, y_lab, filename) {
+  df <- results_df %>%
+    filter(response == response_label) %>%
+    mutate(period = factor(period, levels = c('post_1', 'post_2', 'post_3', 'post_4', 'post_5')))
+  
+  p <- ggplot(df, aes(x = period, y = estimate)) +
+    geom_hline(yintercept = 0, linetype = 'dotted', color = 'grey40') +
+    geom_pointrange(aes(ymin = estimate - 1.96 * std_error, ymax = estimate + 1.96 * std_error,
+                        color = significant), linewidth = 0.8, size = 0.7) +
+    scale_color_manual(values = c(`TRUE` = 'darkred', `FALSE` = 'grey60'), name = 'p < 0.05') +
+    labs(title = paste0(y_lab, ' Effect by Year Since Disturbance'),
+         subtitle = 'Each post-year is its own factor level, compared against a pooled pre-disturbance\nbaseline (years -5 to -1) -- not lumped into one flat "post" average.',
+         x = 'Year since disturbance', y = paste0(y_lab, ' difference from pre-disturbance baseline')) +
+    theme_minimal()
+  
+  ggsave(file.path(outputDir, filename), p, width = 8, height = 5.5, dpi = 300)
+}
+
+plot_period_effects(period_results, 'ndvi_july_mean', 'NDVI', 'period_effects_ndvi.png')
+plot_period_effects(period_results, 'midgreendown_doy_mean', 'MidGreendown', 'period_effects_midgreendown.png')
+
+# -----------------------------------------------------------------------------
+# I6. Superimposed epoch analysis (SEA): mean +/- 95% CI at each relative
+#     year, -5 to +5, with points marked where that year is significantly
+#     different from the pooled pre-baseline (per the factor model above).
+# -----------------------------------------------------------------------------
+compute_sea <- function(data, response_col) {
+  data %>%
+    group_by(years_since_loss) %>%
+    summarise(
+      n        = n(),
+      mean_val = mean(.data[[response_col]], na.rm = TRUE),
+      se       = sd(.data[[response_col]], na.rm = TRUE) / sqrt(n()),
+      ci_lo    = mean_val - 1.96 * se,
+      ci_hi    = mean_val + 1.96 * se,
+      .groups  = 'drop'
+    )
+}
+
+sea_ndvi  <- compute_sea(model_data_ndvi_period, 'ndvi_july_mean')
+sea_pheno <- compute_sea(model_data_pheno_period, 'midgreendown_doy_mean')
+
+sig_lookup <- period_results %>%
+  mutate(years_since_loss = case_when(
+    period == 'post_1' ~ 1, period == 'post_2' ~ 2, period == 'post_3' ~ 3,
+    period == 'post_4' ~ 4, period == 'post_5' ~ 5, TRUE ~ NA_real_
+  )) %>%
+  filter(!is.na(years_since_loss))
+
+sea_ndvi <- sea_ndvi %>%
+  left_join(sig_lookup %>% filter(response == 'ndvi_july_mean') %>% select(years_since_loss, significant),
+            by = 'years_since_loss') %>%
+  mutate(significant = ifelse(is.na(significant), FALSE, significant))  # pre-years: not tested against themselves
+
+sea_pheno <- sea_pheno %>%
+  left_join(sig_lookup %>% filter(response == 'midgreendown_doy_mean') %>% select(years_since_loss, significant),
+            by = 'years_since_loss') %>%
+  mutate(significant = ifelse(is.na(significant), FALSE, significant))
+
+plot_sea <- function(sea_df, y_lab, fill_color, filename) {
+  p <- ggplot(sea_df, aes(x = years_since_loss, y = mean_val)) +
+    geom_ribbon(aes(ymin = ci_lo, ymax = ci_hi), fill = fill_color, alpha = 0.2) +
+    geom_line(color = fill_color, linewidth = 1) +
+    geom_point(aes(color = significant), size = 3) +
+    scale_color_manual(values = c(`TRUE` = 'red', `FALSE` = 'grey30'), name = 'Sig. vs pre (p<0.05)') +
+    geom_vline(xintercept = 0, linetype = 'dashed', color = 'red') +
+    labs(title = paste0('Superimposed Epoch Analysis: ', y_lab, ' by Year Since Disturbance'),
+         subtitle = 'Points = yearly mean +/- 95% CI. Pre-disturbance years (-5 to -1) are the pooled\nreference period; red points are significantly different from that pooled baseline.',
+         x = 'Years since disturbance (0 excluded; negative = pre, positive = post)',
+         y = y_lab) +
+    theme_minimal()
+  
+  ggsave(file.path(outputDir, filename), p, width = 9, height = 6, dpi = 300)
+}
+
+plot_sea(sea_ndvi, 'July NDVI', 'darkgreen', 'sea_ndvi.png')
+plot_sea(sea_pheno, 'MidGreendown day-of-year', 'darkorange', 'sea_midgreendown.png')
+
+cat('\n\nPart I figures/tables saved to', outputDir, ':\n',
+    '  period_effects_ndvi.png\n',
+    '  period_effects_midgreendown.png\n',
+    '  sea_ndvi.png\n',
+    '  sea_midgreendown.png\n',
+    '  period_factor_model_results.csv\n',
+    '  tukey_hsd_ndvi_period.csv\n',
+    '  tukey_hsd_midgreendown_period.csv\n')
+
+# =============================================================================
+# PART J — Does Severity of NDVI Loss Moderate the Effect? (vs. Part H's Area)
+# =============================================================================
+# Part H asked whether patch AREA moderates the disturbance effect. This
+# section asks the same style of question using a different moderator:
+# the MAGNITUDE OF NDVI LOSS each patch actually experienced (ndvi_change,
+# from Part C section 7 -- post_ndvi_mean minus pre_ndvi_mean per patch).
+#
+# IMPORTANT ASYMMETRY, handled deliberately differently for the two
+# responses:
+#
+#   MidGreendown: this is a clean, non-circular test. ndvi_change and
+#   midgreendown_doy_mean are two independently measured quantities, so
+#   asking "do patches with bigger NDVI declines also show bigger
+#   senescence-timing shifts" is a genuine severity-moderation question --
+#   built below as a continuous interaction model, the same style as
+#   Part H's post*log(area_ha).
+#
+#   NDVI: using ndvi_change to moderate ndvi_july_mean itself would use the
+#   outcome to explain the outcome -- a patch's post/pre NDVI difference
+#   is arithmetically DERIVED from the same ndvi_july_mean values the model
+#   is trying to explain, so grouping patches by their own NDVI change and
+#   then asking "do groups differ in NDVI" is close to guaranteed to look
+#   large by construction, not evidence of anything new. This is built
+#   below as a labeled, clearly-flagged DESCRIPTIVE severity-tercile check
+#   (mild/moderate/severe groups), not presented as equivalent evidence to
+#   the MidGreendown version.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# J1. MidGreendown ~ post * NDVI-loss-severity (continuous, non-circular)
+# -----------------------------------------------------------------------------
+model_data_pheno_severity <- model_data_pheno %>%
+  left_join(ndvi_change %>% select(patch_uuid, ndvi_change), by = 'patch_uuid') %>%
+  filter(!is.na(ndvi_change)) %>%
+  mutate(abs_ndvi_change = abs(ndvi_change))
+# abs_ndvi_change used as the primary moderator (rather than signed
+# ndvi_change) purely for interpretability: a NEGATIVE interaction
+# coefficient on abs_ndvi_change then directly reads as "bigger NDVI loss
+# -> bigger (earlier) MidGreendown shift," without having to mentally
+# flip a sign. The signed version is left in the data if you want it.
+
+fit_pheno_severity <- lmerTest::lmer(
+  midgreendown_doy_mean ~ post * abs_ndvi_change + (1 | patch_uuid) + (1 | year),
+  data = model_data_pheno_severity
+)
+
+cat('MidGreendown ~ post * |NDVI change| (severity moderator, continuous):\n')
+print(summary(fit_pheno_severity))
+
+# Direct patch-level scatter as a companion to the model -- same visual
+# style as Part F's QA-vs-shift check, using the pre-computed per-patch
+# summary tables (phenology_change, ndvi_change) rather than the full panel.
+severity_vs_shift <- phenology_change %>%
+  select(patch_uuid, midgreendown_shift) %>%
+  inner_join(ndvi_change %>% select(patch_uuid, ndvi_change), by = 'patch_uuid')
+
+p_severity_vs_shift <- ggplot(severity_vs_shift, aes(x = ndvi_change, y = midgreendown_shift)) +
+  geom_point(alpha = 0.4, color = 'darkgreen') +
+  geom_smooth(method = 'lm', se = TRUE, color = 'black', linewidth = 0.8) +
+  geom_vline(xintercept = 0, linetype = 'dotted', color = 'grey50') +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'grey50') +
+  labs(title = 'MidGreendown Shift vs. NDVI Change, Per Patch',
+       subtitle = paste0('Do patches with bigger NDVI declines (more negative, further left) also show\n',
+                         'bigger senescence-timing shifts (more negative, further down)? Independent\n',
+                         'measurements on each axis -- not a circular comparison.'),
+       x = 'NDVI change (post - pre)', y = 'MidGreendown shift (days, post - pre)') +
+  theme_minimal()
+
+ggsave(file.path(outputDir, 'scatter_ndvi_severity_vs_midgreendown_shift.png'), p_severity_vs_shift,
+       width = 8, height = 6, dpi = 300)
+
+# -----------------------------------------------------------------------------
+# J2. NDVI ~ post * severity-tercile -- DESCRIPTIVE ONLY, see header caveat.
+#     Terciles are built from the same ndvi_change used to define severity,
+#     which is itself derived from the response variable being modeled --
+#     expect this to show large, close-to-definitional differences between
+#     groups. Useful as a sanity check that the grouping behaves as
+#     expected, not as independent confirmation of a severity effect.
+# -----------------------------------------------------------------------------
+ndvi_severity_terciles <- ndvi_change %>%
+  mutate(abs_ndvi_change = abs(ndvi_change),
+         severity_tercile = ntile(abs_ndvi_change, 3)) %>%
+  mutate(severity_tercile = factor(severity_tercile, labels = c('mild', 'moderate', 'severe')))
+
+model_data_ndvi_severity <- model_data_ndvi %>%
+  left_join(ndvi_severity_terciles %>% select(patch_uuid, severity_tercile), by = 'patch_uuid') %>%
+  filter(!is.na(severity_tercile))
+
+fit_ndvi_severity <- lmerTest::lmer(
+  ndvi_july_mean ~ post * severity_tercile + (1 | patch_uuid) + (1 | year),
+  data = model_data_ndvi_severity
+)
+
+cat('\n\nNDVI ~ post * severity tercile (DESCRIPTIVE ONLY -- see Part J header, this is\n',
+    'expected to look large by construction since terciles are built from the\n',
+    'same variable being modeled):\n')
+print(summary(fit_ndvi_severity))
+print(anova(fit_ndvi_severity))
+
+# -----------------------------------------------------------------------------
+# J3. Consolidated results CSV -- both checks, clearly labeled by whether
+#     each is a genuine independent test or a descriptive/circular check
+# -----------------------------------------------------------------------------
+extract_key_rows <- function(fit, response_label, check_type, term_pattern) {
+  co <- summary(fit)$coefficients
+  rows <- rownames(co)[grepl(term_pattern, rownames(co))]
+  tibble(
+    response = response_label,
+    check_type = check_type,
+    term = rows,
+    estimate = co[rows, 'Estimate'],
+    std_error = co[rows, 'Std. Error'],
+    p_value = co[rows, 'Pr(>|t|)'],
+    significant = co[rows, 'Pr(>|t|)'] < 0.05
+  )
+}
+
+severity_results <- bind_rows(
+  extract_key_rows(fit_pheno_severity, 'midgreendown_doy_mean',
+                   'Independent test (non-circular)', 'post:abs_ndvi_change'),
+  extract_key_rows(fit_ndvi_severity, 'ndvi_july_mean',
+                   'DESCRIPTIVE ONLY (circular -- severity defined from same response)',
+                   'post.*severity_tercile')
+)
+
+write.csv(severity_results, file.path(outputDir, 'ndvi_severity_moderation_results.csv'), row.names = FALSE)
+
+cat('\n\nPart J results saved to', outputDir, ':\n',
+    '  scatter_ndvi_severity_vs_midgreendown_shift.png\n',
+    '  ndvi_severity_moderation_results.csv\n\n')
+print(severity_results)

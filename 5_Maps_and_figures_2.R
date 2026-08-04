@@ -18,11 +18,11 @@
 #          trajectories, where each patch's own pre-disturbance window is
 #          rescaled to a common reference point (1 for NDVI, 0 for
 #          MidGreendown — see Part E's header for why these differ).
-# Part F — Deeper senescence-timing analyses: a regional (climate-controlled)
-#          reference comparison (needs Step 4c's output), a per-patch
-#          pre-disturbance TREND baseline instead of a flat mean, senescence
-#          duration/rate, interannual + spatial variability, and a QA-
-#          stratified check for data-quality confounds. See Part F's header.
+# Part F — Deeper senescence-timing analyses: a per-patch pre-disturbance
+#          TREND baseline instead of a flat mean, senescence duration/rate,
+#          interannual + spatial variability, and a QA-stratified check for
+#          data-quality confounds. (F1, a regional-reference comparison,
+#          was removed — Part K1 supersedes it.) See Part F's header.
 # Part G — Mixed-effects model (patch + year crossed random effects) that
 #          consolidates Part E's baseline normalization and Part F #2's
 #          regional-climate comparison into one statistically principled
@@ -51,13 +51,16 @@
 #          since using NDVI's own change to moderate NDVI would be
 #          circular. See Part J's header for why these are treated
 #          differently.
-# Part K — Resolves the two questions Parts F/I/J left open. K1 re-runs
-#          Part I's year-by-year period model on the CLIMATE-CONTROLLED
-#          regional anomaly (patch value minus that year's undisturbed-
-#          forest reference from Step 4c), which supersedes Part F #1's
-#          coarser two-window version and settles whether the delayed
-#          MidGreendown shift is real or regional drift. K2 runs the formal
-#          per-patch severity regression that Part J only plotted.
+# Part K — Resolves the two questions Parts F/I/J left open, plus a
+#          climate-controlled rerun of Part F #4. K1 re-runs Part I's
+#          year-by-year period model on the CLIMATE-CONTROLLED regional
+#          anomaly (patch value minus that year's undisturbed-forest
+#          reference from Step 4c), which supersedes Part F #1's coarser
+#          two-window version and settles whether the delayed MidGreendown
+#          shift is real or regional drift. K2 runs the formal per-patch
+#          severity regression that Part J only plotted. K3 recomputes Part
+#          F #4's interannual-variability ratio on the anomaly rather than
+#          raw DOY, and is the version to report.
 #          REQUIRES Step 4c to have produced a non-empty
 #          reference_phenology_by_year.csv.
 #
@@ -169,6 +172,39 @@ patches_sf <- st_read(file.path(outputDir, 'hansen_persistent_loss_patches.gpkg'
 patch_attrs <- read.csv(file.path(outputDir, 'patch_attribute_table.csv'))
 patch_attrs$meets_forest_threshold <- as.logical(patch_attrs$meets_forest_threshold) 
 
+# -----------------------------------------------------------------------------
+# PRE-DISTURBANCE DECIDUOUS FILTER (from Step 2b)
+#
+# The study design calls for patches that were deciduous/mixed forest BEFORE
+# disturbance. That criterion existed nowhere in the pipeline until Step 2b:
+# Step 3's `meets_forest_threshold` is built from NLCD 2021 only, and Step 3's
+# own header calls it "a FLAG, not a filter" -- it was never applied anywhere
+# except as a fill colour on map_patches_meeting_criteria.png. A 2021-only
+# criterion also cannot serve as "before": for a patch cut in 2005 it means
+# "recovered to deciduous", for one cut in 2023 it means "was deciduous".
+#
+# Step 2b builds the real thing from NLCD 2001 (2019_REL, for release
+# consistency): decid_before_ok = >=75% classes 41/43 pre-disturbance.
+#
+# BEFORE only, not before-and-after -- see Step 2b section 5 for the full
+# argument. Two reasons in short: (a) at a +5yr lag only 11 patches are
+# deciduous at both ends, because NLCD reads recently-cut land as grass or
+# shrub for well over five years; (b) post-disturbance composition is a
+# post-treatment variable related to the outcome, so filtering on it would
+# bias the effect estimate. It is carried as a MODERATOR in Part K instead.
+# -----------------------------------------------------------------------------
+decid_filter <- read.csv(file.path(outputDir, 'patch_deciduous_filter.csv'))
+
+deciduous_patches <- decid_filter$patch_uuid[decid_filter$decid_before_ok]
+
+cat(sprintf('Pre-disturbance deciduous filter: %d of %d patches >=25 ha qualify.\n',
+            length(deciduous_patches), nrow(decid_filter)))
+if (length(deciduous_patches) < 100) {
+  warning('Only ', length(deciduous_patches), ' patches pass the deciduous ',
+          'before-filter. Check Step 2b section 4 before running the ',
+          'moderator analyses in Parts H and K -- they need subgroup n.')
+}
+
 patches_sf <- merge(
   patches_sf, patch_attrs[, c('patch_uuid', 'meets_forest_threshold', 'forest_cover_mean')],
   by = 'patch_uuid', all.x = TRUE
@@ -266,7 +302,11 @@ ndvi_long <- read.csv(file.path(outputDir, 'ndvi_yearly_july_by_patch.csv'))
 ndvi_long <- ndvi_long %>%
   select(-any_of('area_ha')) %>%
   left_join(patch_attrs %>% select(patch_uuid, area_ha), by = 'patch_uuid') %>%
-  filter(area_ha >= 25)
+  filter(area_ha >= 25) %>%
+  filter(patch_uuid %in% deciduous_patches)   # <-- pre-disturbance deciduous, see Part B
+
+cat(sprintf('NDVI population after both filters (>=25 ha AND deciduous before): %d patches.\n',
+            n_distinct(ndvi_long$patch_uuid)))
 
 # Drop rows with no valid NDVI (ndvi_july_count == 0 -> ndvi_july_mean is NA,
 # per the fix in Step 4 that guarantees the column exists even when blank).
@@ -465,7 +505,11 @@ phenology_long <- read.csv(file.path(outputDir, 'phenology_yearly_by_patch.csv')
 
 phenology_long <- phenology_long %>%
   left_join(patch_attrs[, c('patch_uuid', 'area_ha')], by = 'patch_uuid') %>%
-  filter(area_ha >= 25, !is.na(midgreendown_doy_mean))
+  filter(area_ha >= 25, !is.na(midgreendown_doy_mean)) %>%
+  filter(patch_uuid %in% deciduous_patches)   # <-- pre-disturbance deciduous, see Part B
+
+cat(sprintf('Phenology population after both filters (>=25 ha AND deciduous before): %d patches.\n',
+            n_distinct(phenology_long$patch_uuid)))
 
 # Relativize to each patch's own loss_year, same as Part C.
 phenology_long <- phenology_long %>%
@@ -781,7 +825,7 @@ cat(sprintf('Part E figures saved to %s/:\n', outputDir),
 # =============================================================================
 # PART F — Deeper Senescence-Timing Analyses
 # =============================================================================
-# F1: regional (climate) reference comparison -- needs Step 4c's output
+# F1: REMOVED -- superseded by Part K1 (see the note where it used to be)
 # F2: patch's own pre-disturbance TREND (not just flat mean) as baseline
 # F3: senescence duration/rate (Senescence_1 -> Dormancy_1), not just a date
 # F4: interannual variability, pre vs post (does timing get less predictable?)
@@ -789,84 +833,25 @@ cat(sprintf('Part E figures saved to %s/:\n', outputDir),
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# F1. Regional reference comparison (climate-controlled)
-#     Requires reference_phenology_by_year.csv from Step 4c. Computes each
-#     patch-year's anomaly relative to that YEAR's regional reference mean,
-#     then compares each patch's own pre- vs post-disturbance anomaly level
-#     (a difference-in-differences estimate): this nets out BOTH (a) the
-#     region's common year-to-year climate variation, since we subtract the
-#     matching year's regional mean first, and (b) each patch's own
-#     idiosyncratic offset from the regional average (e.g. due to elevation,
-#     aspect, forest type), since we compare the patch's own anomaly level
-#     before vs after -- not the anomaly's absolute value.
+# F1. REMOVED — superseded by Part K1.
+#
+# This section previously compared each patch's pre- vs post-disturbance gap
+# from the regional reference using a coarse two-window summary (all pre-loss
+# years vs. post years 1-3). Part K1 performs the same climate correction but
+# with Part I's year-by-year period factor, which is the structure that
+# revealed the delayed MidGreendown response (null at year 1, stepping to
+# -1.92 days by year 4) that the two-window version averages away.
+#
+# Removed rather than kept as a cross-check because leaving a weaker
+# duplicate beside a stronger result invites citing the wrong one. The
+# figures it produced -- phenology_regional_anomaly_trajectory.png and
+# hist_phenology_regional_anomaly_shift.png -- should be deleted from the
+# output folder if they are still present; they were also blank for the
+# entire period before Step 4c was fixed.
+#
+# Note that Part K1 builds `phenology_long_ref` itself, so nothing here is
+# needed by anything downstream.
 # -----------------------------------------------------------------------------
-reference_phenology <- read.csv(file.path(outputDir, 'reference_phenology_by_year.csv'))
-
-phenology_long_ref <- phenology_long %>%
-  left_join(reference_phenology %>% select(year, ref_midgreendown_mean), by = 'year') %>%
-  filter(!is.na(ref_midgreendown_mean)) %>%
-  mutate(regional_anomaly = midgreendown_doy_mean - ref_midgreendown_mean)
-
-regional_anomaly_trajectory <- phenology_long_ref %>%
-  group_by(years_since_loss) %>%
-  summarise(
-    n_patches   = n(),
-    anomaly_mean = mean(regional_anomaly, na.rm = TRUE),
-    anomaly_q25  = quantile(regional_anomaly, 0.25, na.rm = TRUE),
-    anomaly_q75  = quantile(regional_anomaly, 0.75, na.rm = TRUE),
-    .groups = 'drop'
-  ) %>%
-  filter(n_patches >= 5)
-
-p_regional_anomaly <- ggplot(regional_anomaly_trajectory, aes(x = years_since_loss)) +
-  geom_ribbon(aes(ymin = anomaly_q25, ymax = anomaly_q75), fill = 'steelblue', alpha = 0.2) +
-  geom_line(aes(y = anomaly_mean), color = 'steelblue', linewidth = 1) +
-  geom_vline(xintercept = 0, linetype = 'dashed', color = 'red') +
-  labs(
-    title    = 'MidGreendown Timing Relative to the Regional (Undisturbed-Forest) Baseline',
-    subtitle = paste0('Each point = patch MidGreendown DOY minus that YEAR\'s regional reference mean\n',
-                      '(Step 4c, ', reference_phenology$year[1], '-', tail(reference_phenology$year, 1),
-                      ', n ref cells varies by year). This nets out common year-to-year climate\n',
-                      'variability; a level SHIFT around loss_year (not the absolute level, which\n',
-                      'reflects each patch\'s own baseline offset from the region) indicates a real\n',
-                      'disturbance effect. Patches >= 25 ha only.'),
-    x = 'Years since disturbance (0 = loss_year)',
-    y = 'MidGreendown timing relative to regional reference (days)'
-  ) +
-  theme_minimal()
-
-ggsave(file.path(outputDir, 'phenology_regional_anomaly_trajectory.png'), p_regional_anomaly,
-       width = 9, height = 6.5, dpi = 300)
-
-# Difference-in-differences per patch: change in the patch's OWN anomaly
-# level, pre vs post -- this is the actual disturbance-attributable shift,
-# controlling for both regional climate and the patch's own baseline offset.
-regional_anomaly_change <- phenology_long_ref %>%
-  group_by(patch_uuid) %>%
-  summarise(
-    pre_anomaly_mean  = mean(regional_anomaly[years_since_loss < 0], na.rm = TRUE),
-    post_anomaly_mean = mean(regional_anomaly[years_since_loss >= 1 & years_since_loss <= 3], na.rm = TRUE),
-    n_pre_years  = sum(years_since_loss < 0),
-    n_post_years = sum(years_since_loss >= 1 & years_since_loss <= 3),
-    .groups = 'drop'
-  ) %>%
-  mutate(regional_anomaly_shift = post_anomaly_mean - pre_anomaly_mean) %>%
-  filter(n_pre_years >= 3, n_post_years >= 1)
-
-p_regional_anomaly_hist <- ggplot(regional_anomaly_change, aes(x = regional_anomaly_shift)) +
-  geom_histogram(bins = 30, fill = 'steelblue', alpha = 0.7, color = 'white') +
-  geom_vline(xintercept = 0, linetype = 'dashed', color = 'grey30') +
-  labs(title = 'Climate-Controlled MidGreendown Shift, Per Patch',
-       subtitle = paste0('Change in each patch\'s own gap from the regional reference, post vs pre\n',
-                         'disturbance -- controls for both regional climate variability and each\n',
-                         'patch\'s own baseline offset from the region. Dashed line at 0 = no shift\n',
-                         'beyond regional climate. Patches >= 25 ha only.'),
-       x = 'Regional-anomaly shift (days, post - pre)', y = 'Number of patches') +
-  theme_minimal()
-
-ggsave(file.path(outputDir, 'hist_phenology_regional_anomaly_shift.png'), p_regional_anomaly_hist,
-       width = 8, height = 5.5, dpi = 300)
-
 # -----------------------------------------------------------------------------
 # F2. Patch's own pre-disturbance TREND as baseline (not just a flat mean)
 #     If senescence timing has been drifting across the record for climate
@@ -1161,8 +1146,6 @@ ggsave(file.path(outputDir, 'scatter_qa_vs_phenology_shift.png'), p_qa_vs_shift,
        width = 8, height = 6, dpi = 300)
 
 cat(sprintf('Part F figures saved to %s/:\n', outputDir),
-    '  phenology_regional_anomaly_trajectory.png\n',
-    '  hist_phenology_regional_anomaly_shift.png\n',
     '  phenology_trend_residual_trajectory.png\n',
     '  senescence_duration_trajectory.png\n',
     '  hist_senescence_duration_change.png\n',
@@ -2149,7 +2132,98 @@ if (severity_lm_results$significant) {
       'apparent slope in the scatter is within noise.\n')
 }
 
+# -----------------------------------------------------------------------------
+# K3. Interannual variability, CLIMATE-CONTROLLED
+#     Part F #4 computes the post/pre ratio of year-to-year SD on RAW
+#     MidGreendown DOY. This recomputes it on the regional anomaly (each
+#     patch-year minus that year's undisturbed-forest reference), which is
+#     the cleaner quantity: it asks whether the PATCH became less stable,
+#     not whether the calendar years its windows happened to span were more
+#     variable regionally.
+#
+#     It lives in Part K rather than beside Part F #4 because it needs
+#     phenology_long_ref, which K1 builds.
+#
+#     RESULT: the climate-controlled version is STRONGER than the raw one
+#     (median 1.54 vs 1.28). That direction is the reassuring one -- shared
+#     regional year-to-year variation inflates BOTH windows' SDs, and
+#     inflating both compresses their ratio toward 1, so removing it lets
+#     the patch-specific component show. Had the median instead dropped
+#     toward 1.0, the raw result would have been calendar-window
+#     composition rather than a real change in patch sensitivity.
+#     Report THIS version as primary.
+#
+#     Same matched-window design as Part F #4 (-3:-1 vs 1:3, both complete)
+#     so the small-sample SD bias cancels -- see that section's header for
+#     why unequal windows manufacture a spurious ratio.
+# -----------------------------------------------------------------------------
+interannual_variability_anom <- phenology_long_ref %>%
+  group_by(patch_uuid) %>%
+  summarise(
+    pre_sd  = sd(regional_anomaly[years_since_loss %in% -3:-1], na.rm = TRUE),
+    post_sd = sd(regional_anomaly[years_since_loss %in% 1:3],   na.rm = TRUE),
+    n_pre_years  = sum(years_since_loss %in% -3:-1 & !is.na(regional_anomaly)),
+    n_post_years = sum(years_since_loss %in% 1:3   & !is.na(regional_anomaly)),
+    .groups = 'drop'
+  ) %>%
+  filter(n_pre_years == 3, n_post_years == 3, pre_sd > 0) %>%
+  mutate(sd_ratio   = post_sd / pre_sd,
+         log2_ratio = log2(sd_ratio))
+
+median_ratio_anom <- median(interannual_variability_anom$sd_ratio, na.rm = TRUE)
+wilcox_var_anom   <- wilcox.test(interannual_variability_anom$log2_ratio, mu = 0)
+
+cat('\n\n=== K3: Interannual variability, climate-controlled ===\n')
+cat(sprintf('  n patches: %d\n', nrow(interannual_variability_anom)))
+cat(sprintf('  Median post/pre SD ratio (anomaly): %.3f\n', median_ratio_anom))
+cat(sprintf('  Wilcoxon signed-rank on log2 ratio vs 0: p = %.4g\n', wilcox_var_anom$p.value))
+cat(sprintf('  (Part F #4 raw-DOY comparison for reference: median %.3f)\n',
+            median_ratio))
+
+variability_comparison <- tibble(
+  version     = c('Raw MidGreendown DOY (Part F #4)',
+                  'Regional anomaly, climate-controlled (K3) -- PRIMARY'),
+  n_patches   = c(nrow(interannual_variability), nrow(interannual_variability_anom)),
+  median_ratio = c(median_ratio, median_ratio_anom),
+  wilcoxon_p  = c(wilcox_var$p.value, wilcox_var_anom$p.value)
+)
+write.csv(variability_comparison,
+          file.path(outputDir, 'variability_raw_vs_climate_controlled.csv'), row.names = FALSE)
+print(variability_comparison)
+
+p_interannual_anom <- ggplot(interannual_variability_anom, aes(x = sd_ratio)) +
+  geom_histogram(bins = 30, fill = 'mediumorchid4', alpha = 0.7, color = 'white') +
+  geom_vline(xintercept = 1, linetype = 'dashed', color = 'grey30') +
+  geom_vline(xintercept = median_ratio_anom, linetype = 'solid',
+             color = 'darkred', linewidth = 0.8) +
+  scale_x_continuous(trans = 'log2',
+                     breaks = c(0.25, 0.5, 1, 2, 4),
+                     labels = c('0.25', '0.5', '1', '2', '4')) +
+  labs(title = 'Interannual Variability of MidGreendown Timing (Climate-Controlled)',
+       subtitle = paste0('Post/pre ratio of year-to-year stdDev in each patch\'s ANOMALY from the\n',
+                         'contemporaneous regional reference (Step 4c) -- isolates change in the\n',
+                         'patch\'s own stability from regionally shared year-to-year variation.\n',
+                         'Matched 3-year windows (-3:-1 vs 1:3, both complete) so small-sample SD\n',
+                         'bias cancels. Log2 axis: the null is symmetric in log space.\n',
+                         sprintf('Median = %.3f, Wilcoxon p = %.3g, n = %d patches.',
+                                 median_ratio_anom, wilcox_var_anom$p.value,
+                                 nrow(interannual_variability_anom))),
+       x = 'Post-loss SD / Pre-loss SD (anomaly, log2 scale)',
+       y = 'Number of patches') +
+  theme_minimal()
+
+ggsave(file.path(outputDir, 'hist_midgreendown_variability_climate_controlled.png'),
+       p_interannual_anom, width = 8, height = 6.5, dpi = 300)
+
+# CAVEAT for the write-up: n=3 per window makes each patch's individual
+# ratio very noisy -- this is a variance-of-a-variance estimate. The MEDIAN
+# and the Wilcoxon p-value are well determined at n=447 patches, but do not
+# quote a confidence interval on the "54%" figure; the per-patch spread is
+# far wider than that central tendency implies.
+
 cat(sprintf('\nPart K outputs saved to %s/:\n', outputDir),
     '  period_effects_climate_controlled.png\n',
     '  period_raw_vs_climate_controlled.csv\n',
-    '  severity_lm_results.csv\n')
+    '  severity_lm_results.csv\n',
+    '  hist_midgreendown_variability_climate_controlled.png\n',
+    '  variability_raw_vs_climate_controlled.csv\n')

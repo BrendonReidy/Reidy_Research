@@ -212,9 +212,17 @@ modisPixels <- modisPoints$map(ee_utils_pyfunc(function(feature) {
 }))
 
 # -- Pass 1: loss pixel count (sum of Hansen 30m loss pixels per MODIS cell) --
-pixelStats1 <- persistentLoss$rename('loss_pixel_count')$reduceRegions(
+# -- Pass 1: loss pixel count (sum of Hansen 30m loss pixels per MODIS cell) --
+# setOutputs() forces the output property name. Without it, reduceRegions()
+# on a SINGLE-BAND image with a SINGLE-OUTPUT reducer names the property
+# after the REDUCER ('sum'), not the band -- $rename() on the image has no
+# effect on that. The filter below would then match nothing and silently
+# return an empty collection, exporting a blank CSV with no error anywhere.
+# Step 4 already uses this same setOutputs() pattern for exactly this
+# reason; the fix simply never propagated back here.
+pixelStats1 <- persistentLoss$reduceRegions(
   collection = modisPixels,
-  reducer    = ee$Reducer$sum(),
+  reducer    = ee$Reducer$sum()$setOutputs(list('loss_pixel_count')),
   scale      = 30,
   tileScale  = 4
 )
@@ -224,9 +232,10 @@ pixelStats1 <- persistentLoss$rename('loss_pixel_count')$reduceRegions(
 pixelStats1 <- pixelStats1$filter(ee$Filter$gt('loss_pixel_count', 0))
 
 # -- Pass 2: dominant Hansen loss year (mode) per cell ------------------------
-pixelStats2 <- lossyearPix$rename('dominant_lossyear')$reduceRegions(
+# Same setOutputs() reasoning as Pass 1 (default would be 'mode').
+pixelStats2 <- lossyearPix$reduceRegions(
   collection = pixelStats1,
-  reducer    = ee$Reducer$mode(),
+  reducer    = ee$Reducer$mode()$setOutputs(list('dominant_lossyear')),
   scale      = 30,
   tileScale  = 4
 )
@@ -273,41 +282,102 @@ pixelTable <- pixelTable$select(list(
   'forest_cover_mean', 'forest_cover_stdDev'
 ))
 
+# `selectors` on the export call, matching the pattern Steps 4 and 4b
+# already use. Without it the CSV also carries `.geo` -- the full buffered-
+# circle polygon for every one of ~72,000 cells -- which inflated the export
+# from a few MB to 80 MB. That geometry is doubly useless here: it's
+# redundant with centroid_lon/centroid_lat, AND it's only an equal-area
+# CIRCLE approximating the square MODIS footprint, so it isn't the true
+# pixel boundary anyway. select() above does not remove it; only `selectors`
+# does, because select() operates on feature properties while `.geo` and
+# `system.index` are added by the CSV exporter itself.
+pixelColumns <- c('centroid_lon', 'centroid_lat',
+                  'loss_pixel_count', 'dominant_lossyear',
+                  'elevation_mean', 'aspect_deg',
+                  'forest_cover_mean', 'forest_cover_stdDev')
+
 pixelTask <- ee_table_to_drive(
   collection  = pixelTable,
   description = 'pixel_attribute_table_raw',
   folder      = 'Reidy_research',
   fileFormat  = 'CSV',
+  selectors   = pixelColumns,
   timePrefix  = FALSE
 )
 pixelTask$start()
 cat('Pixel attribute table (raw, no UUID yet) export started.\n')
 ee_monitoring(pixelTask)
 
+# NOTE: deliberately NOT calling pixelTable$size()$getInfo() here. That would
+# be an interactive call forcing all four reduceRegions passes over ~144,600
+# buffered cells, which is the same shape of operation that repeatedly hit
+# "Computation timed out" in Step 4c. The batch export above has far longer
+# limits; verification happens on the downloaded file in section 4 instead.
+
 # -----------------------------------------------------------------------------
 # 4. Download the raw pixel CSV, assign pixel_uuid client-side, re-save
 #    (GEE has no UUID generator — same reasoning as Step 1's patch_uuid)
 # -----------------------------------------------------------------------------
-# Shared output directory (see config.R) — keeps every pipeline script
-# writing to/reading from the same place. Sourced via a fixed absolute path
-# (not a bare relative "config.R") so this doesn't depend on R's working
-# directory at run time, matching how the rest of this script's paths work.
-source(file.path("~/Google Drive/My Drive/Reidy_research/fall color code", "config.R"))
+# Shared output directory — the SAME local folder every other pipeline
+# script reads from and writes to. Defined directly rather than sourced from
+# a config.R: the config file earlier drafts referenced doesn't exist at that
+# path, so every source() call failed and left outputDir undefined.
+outputDir <- file.path("~/Google Drive/My Drive", "Reidy_research")
+if (!dir.exists(outputDir)) dir.create(outputDir, recursive = TRUE)
 
 Sys.sleep(15)
 rawFile <- drive_ls(path = 'Reidy_research', pattern = 'pixel_attribute_table_raw')
 stopifnot(nrow(rawFile) >= 1)
 
-localRaw <- file.path(tempdir(), 'pixel_attribute_table_raw.csv')
-drive_download(file = rawFile[1, ], path = localRaw, overwrite = TRUE)
+# Select the NEWEST export by id, not by reordering the dribble.
+# GEE does not overwrite files on Drive -- re-running an export leaves the
+# previous version in place under the same name, so drive_ls() commonly
+# returns several identically-named files. Taking rawFile[1, ] silently
+# grabbed a stale 2-byte export from an earlier run of this script (back
+# when the reduceRegions property-name bug made it produce nothing), and
+# everything downstream then failed confusingly despite the current export
+# being fine.
+#
+# NOTE: reordering the dribble with rawFile[order(...), ] does NOT reliably
+# work -- it was tried and the original row order persisted. Pulling the id
+# out and passing it to as_id() is the approach that actually holds.
+mtimes    <- sapply(rawFile$drive_resource, function(x) x$modifiedTime)
+newest_id <- rawFile$id[order(mtimes, decreasing = TRUE)][1]
+cat(sprintf('Using export modified %s (of %d matching files on Drive).\n',
+            max(mtimes), nrow(rawFile)))
+
+# Fresh filename each run: if drive_download() ever no-ops or errors, a
+# stale file left at a reused path gets silently re-read instead.
+localRaw <- file.path(tempdir(), 'pixel_raw_current.csv')
+drive_download(as_id(newest_id), path = localRaw, overwrite = TRUE)
+
+# Guard: count NON-BLANK lines, not lines. A zero-row export can be a couple
+# of bare newlines, which passes a naive length(readLines()) >= 2 check while
+# containing nothing -- read.csv() then fails with "no lines available in
+# input", several steps removed from the real cause.
+raw_lines <- readLines(localRaw, warn = FALSE)
+raw_lines <- raw_lines[nzchar(trimws(raw_lines))]
+if (length(raw_lines) < 2) {
+  stop('Downloaded pixel CSV has no data rows (', length(raw_lines),
+       ' non-blank line(s)). Either the export produced nothing -- check the ',
+       'reduceRegions property names in section 3, Passes 1-2 -- or a stale ',
+       'empty file was picked up from Drive.')
+}
 
 pixelDF <- read.csv(localRaw)
+cat(sprintf('Pixel table downloaded: %d rows.\n', nrow(pixelDF)))
 pixelDF$pixel_uuid <- vapply(seq_len(nrow(pixelDF)), function(i) UUIDgenerate(), character(1))
 stopifnot(!any(duplicated(pixelDF$pixel_uuid)))
 
 localFinal <- file.path(outputDir, 'pixel_attribute_table.csv')
 write.csv(pixelDF, localFinal, row.names = FALSE)
 
+# NOTE: overwrite = TRUE here is a googledrive-level overwrite and does
+# replace the file. That's different from GEE's own exports, which do NOT
+# overwrite and are the source of the duplicate-name problem handled above.
+# Still worth periodically checking the Drive folder for accumulated
+# duplicates from earlier runs -- Step 5 reads the LOCAL copy, so a stale
+# Drive file won't break anything, but it makes the folder misleading.
 drive_upload(
   media     = localFinal,
   path      = 'Reidy_research/',
@@ -320,11 +390,23 @@ cat(sprintf('Pixel attribute table finalized: %d rows, saved locally and to Driv
 # -----------------------------------------------------------------------------
 # 5. Also pull the finished patch table down locally for convenience
 # -----------------------------------------------------------------------------
+# Same newest-by-id selection as section 4, and for a more important reason:
+# patch_attribute_table.csv is what Step 5 loads as `patch_attrs`, which
+# supplies area_ha (the >=25 ha MODIS-resolvable filter) and
+# meets_forest_threshold. This export has been re-run several times during
+# development, so multiple identically-named copies exist on Drive and
+# patchFile[1, ] offers no guarantee of getting the current one.
 Sys.sleep(15)
 patchFile <- drive_ls(path = 'Reidy_research', pattern = 'patch_attribute_table')
+
 if (nrow(patchFile) >= 1) {
+  patch_mtimes <- sapply(patchFile$drive_resource, function(x) x$modifiedTime)
+  patch_newest <- patchFile$id[order(patch_mtimes, decreasing = TRUE)][1]
+  cat(sprintf('Using patch table modified %s (of %d matching files on Drive).\n',
+              max(patch_mtimes), nrow(patchFile)))
+  
   drive_download(
-    file      = patchFile[1, ],
+    file      = as_id(patch_newest),
     path      = file.path(outputDir, 'patch_attribute_table.csv'),
     overwrite = TRUE
   )

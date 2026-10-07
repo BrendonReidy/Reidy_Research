@@ -165,7 +165,7 @@ summary_tbl <- res %>%
   )
 
 cat("\nResults by ecoregion:\n")
-print(as.data.frame(summary_tbl))
+as.data.frame(summary_tbl)
 cat("\nmax_patches = most 25 ha+ patches the selected hexes could hold (an upper bound).\n")
 
 complete <- all(summary_tbl$selected == N_PER_ECOREGION) &&

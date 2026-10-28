@@ -1,8 +1,14 @@
 # Patch Step 1: find every qualifying forest loss patch in the study area
 # -----------------------------------------------------------------------------
-# Open in RStudio and click "Source".
+# Open in RStudio and use Source with Echo so the tables
+# and map show. A plain "Source" still saves every file but won't show them.
 # Needs: rgee, googledrive, sf, dplyr, ggplot2
 # Reads:  scaleup_patches/ecoregions_conus_l3.gpkg   (made by Patch Step 0)
+# Saves (names end in _TEST for a test run):
+#   patches_all_labeled.csv     every patch in the study area, with its rules
+#   patches_qualifying.gpkg     polygons of the qualifying patches
+#   map_qualifying_patches.png
+#   by_tile_v2/                 raw download for each tile
 #
 # HOW PATCHES ARE KEPT WHOLE AND COUNTED ONCE
 #   Earth Engine can't do the whole eastern US in one job, so the study area
@@ -10,16 +16,14 @@
 #   tiles invisible in the result:
 #     - Each job looks 10 km past its tile (and past the study-area edge), so
 #       a patch near an edge is found WHOLE, not cut off.
-#     - A patch found by two neighbouring jobs is kept only from the tile its
-#       centre falls in, so it is counted ONCE.
+#     - A patch found by two neighboring jobs is kept only from the tile its
+#       ceenter falls in, so it is counted ONCE.
 #   The script then checks that no kept patch is wider than 10 km (a patch
 #   that big could have been cut off) and reports any that are.
-#
-# HOW PATCHES THAT CROSS AN ECOREGION BOUNDARY ARE HANDLED
 #   Ecoregions are not used to cut anything. Each whole patch is assigned to
 #   the ONE Level III ecoregion that holds most of its area. A patch is in the
 #   study if that ecoregion is included. Patches that cross a boundary are
-#   marked (crosses_ecoregion, eco_share) so you can check them.
+#   marked (crosses_ecoregion, eco_share).
 #
 # What it does:
 #   1. Reads the included ecoregions from Step 0 and lists the tiles
@@ -36,10 +40,10 @@
 #        - >= 75% hardwood in the latest NLCD year at least 2 years before loss
 #        - not "converted": mostly farm/developed/bare in 2021, or still mostly
 #          grass 7+ years after the loss (mines, pasture, development)
-#   5. Saves the results, prints the counts, maps the qualifying patches.
+#   5. Saves the results, shows the counts, maps the qualifying patches.
 #
 # TEST RUN FIRST: TEST_RUN <- TRUE runs only the tile holding the pilot area.
-# The full run will take several hours; progress prints every 3 minutes.
+# The full run will take several hours; a progress line shows every 3 minutes.
 # If R stops, wait until the Tasks tab shows nothing running, then Source
 # again: it downloads what finished and only restarts what's missing.
 # =============================================================================
@@ -54,7 +58,7 @@ ee_Initialize(drive = TRUE)
 
 # ---- Settings ---------------------------------------------------------------
 RUN_TAG          <- "v2"    # names the exports; change it if you change any setting below
-TEST_RUN         <- FALSE    # TRUE = only the tile with the pilot area. FALSE = everything.
+TEST_RUN         <- FALSE   # TRUE = only the tile with the pilot area. FALSE = everything.
 TEST_POINT       <- c(-79.862539, 37.829550)
 LOSS_YEAR_MIN    <- 2004    # >= 3 years of before data (phenology starts 2001)
 LOSS_YEAR_MAX    <- 2020    # >= 3 years of after data (phenology ends 2023)
@@ -80,7 +84,7 @@ if (!file.exists(eco_file)) stop("Run patch_step0_study_area.R first.", call. = 
 eco <- st_read(eco_file, quiet = TRUE) %>%
   mutate(us_l3code = as.character(us_l3code), included = as.logical(included))
 inc_codes <- eco$us_l3code[eco$included]
-cat(sprintf("\nIncluded Level III ecoregions: %d\n", length(inc_codes)))
+length(inc_codes)   # included Level III ecoregions
 
 study_buf <- eco %>% filter(included) %>% st_union() %>% st_buffer(BUFFER_M) %>% st_transform(4326)
 bb <- unname(st_bbox(study_buf))   # xmin, ymin, xmax, ymax
@@ -97,12 +101,11 @@ tile_poly <- st_sfc(lapply(seq_len(nrow(tiles)), function(k) {
 }), crs = 4326)
 tiles <- tiles[lengths(st_intersects(tile_poly, study_buf)) > 0, ]
 
-if (TEST_RUN) {
+if (TEST_RUN) {   # test run: only the tile holding the pilot area
   tiles <- tiles %>% filter(lon0 == floor(TEST_POINT[1] / TILE_DEG) * TILE_DEG,
                             lat0 == floor(TEST_POINT[2] / TILE_DEG) * TILE_DEG)
-  cat("TEST RUN: only", tiles$id, "\n")
 }
-cat(sprintf("Tiles to process: %d\n", nrow(tiles)))
+nrow(tiles)   # tiles to process
 
 # ---- 2. Earth Engine: images and the per-tile job ---------------------------
 studyFC  <- ee$FeatureCollection("EPA/Ecoregions/2013/L3")$
@@ -224,7 +227,7 @@ download_ready <- function(ids) {
 }
 
 todo <- tiles$id[!vapply(tiles$id, is_done, TRUE)]
-cat(sprintf("Tiles already downloaded: %d of %d\n", nrow(tiles) - length(todo), nrow(tiles)))
+length(todo)   # tiles not downloaded yet (0 = all done, skips straight to section 4)
 failed <- data.frame()
 
 if (length(todo) > 0) {
@@ -243,8 +246,10 @@ if (length(todo) > 0) {
     t$start()
     n_started <- n_started + 1
   }
-  cat(sprintf("Started %d Earth Engine jobs (%d were already running). Checking every 3 minutes...\n",
-              n_started, length(todo) - n_started))
+  
+  # Progress lines use message() because nothing inside a loop shows on its own
+  message(sprintf("Started %d Earth Engine jobs (%d were already running). Checking every 3 minutes...",
+                  n_started, length(todo) - n_started))
   
   t0 <- Sys.time()
   repeat {
@@ -254,17 +259,15 @@ if (length(todo) > 0) {
     st <- ee_states()
     st <- st[st$description %in% export_name(todo), ]
     failed <- st[st$state %in% c("FAILED", "CANCELLED"), ]
-    cat(sprintf("%s  tiles left: %d  (running: %d, waiting: %d, failed: %d)\n",
-                format(Sys.time(), "%H:%M"), length(todo), sum(st$state == "RUNNING"),
-                sum(st$state == "READY"), nrow(failed)))
+    message(sprintf("%s  tiles left: %d  (running: %d, waiting: %d, failed: %d)",
+                    format(Sys.time(), "%H:%M"), length(todo), sum(st$state == "RUNNING"),
+                    sum(st$state == "READY"), nrow(failed)))
     if (length(todo) == 0 || length(todo) == nrow(failed)) break
     if (difftime(Sys.time(), t0, units = "hours") > 24) break
   }
-  if (nrow(failed) > 0) {
-    cat("\nThese tiles failed (Source again to retry them):\n")
-    print(failed[, c("description", "state", "error")], row.names = FALSE)
-  }
 }
+
+failed   # tiles that failed (empty = none). Source again to retry them.
 
 have    <- tiles$id[vapply(tiles$id, is_done, TRUE)]
 missing <- setdiff(tiles$id, have)
@@ -287,22 +290,21 @@ read_tile <- function(id) {
 }
 poly <- do.call(rbind, lapply(have, read_tile))
 poly <- poly[!duplicated(poly$patch_id), ]
-cat(sprintf("\nPatches found (all tiles, incl. the 10 km overlaps): %d\n", nrow(poly)))
+nrow(poly)   # patches found in all tiles, incl. the 10 km overlaps
 
 # 4a. Counted once: keep a patch only from the tile its centre falls in
 poly <- poly %>%
   left_join(tiles %>% select(tile = id, lon0, lat0), by = "tile") %>%
   filter(lon >= lon0, lon < lon0 + TILE_DEG, lat >= lat0, lat < lat0 + TILE_DEG) %>%
   select(-lon0, -lat0)
-cat(sprintf("Patches after removing tile overlaps: %d\n", nrow(poly)))
+nrow(poly)   # patches after removing tile overlaps
 
 # 4b. Kept whole: a patch narrower than the 10 km look-past can't have been cut
 poly_alb <- st_make_valid(st_transform(poly, 5070))
 ext <- t(sapply(st_geometry(poly_alb), st_bbox))
 poly$extent_km        <- round(pmax(ext[, 3] - ext[, 1], ext[, 4] - ext[, 2]) / 1000, 2)
 poly$possibly_cut_off <- poly$extent_km * 1000 >= BUFFER_M
-cat(sprintf("Patches %g km or more across (could have been cut off at a job edge): %d\n",
-            BUFFER_M / 1000, sum(poly$possibly_cut_off)))
+sum(poly$possibly_cut_off)   # patches 10 km or more across (could have been cut off at a job edge)
 
 # 4c. One ecoregion per patch: the Level III ecoregion holding most of its area
 eco_alb <- st_transform(eco, 5070)
@@ -335,8 +337,7 @@ if (any(!inside)) {
   poly$us_l3code[ok] <- best$us_l3code[m[ok]]
   poly$eco_share[ok] <- round(best$share[m[ok]], 3)
 }
-cat(sprintf("Patches crossing an ecoregion boundary: %d (each assigned to the ecoregion with most of its area)\n",
-            sum(poly$crosses_ecoregion)))
+sum(poly$crosses_ecoregion)   # patches crossing an ecoregion boundary (each assigned to the one with most of its area)
 
 poly <- poly %>%
   left_join(st_drop_geometry(eco) %>%
@@ -377,52 +378,44 @@ st_write(qual_poly, file.path(outDir, paste0("patches_qualifying", tag, ".gpkg")
          delete_dsn = TRUE, quiet = TRUE)
 
 # ---- 5. Summary + map -------------------------------------------------------
+# Patches by Level II region (patches_found = >= 5 ha and >= 50% hardwood before)
 funnel <- pts_df %>%
   group_by(na_l2code, na_l2name) %>%
   summarise(
-    patches_found    = n(),          # >= 5 ha and >= 50% hardwood before (Earth Engine pre-filter)
+    patches_found    = n(),
     hardwood_75      = sum(hardwood_ok),
     converted        = sum(hardwood_ok & after_label == "converted"),
     qualify          = sum(qualifies),
     cross_boundary   = sum(qualifies & crosses_ecoregion),
     .groups = "drop"
-  )
-cat("\nPatches by Level II region (patches_found = >= 5 ha and >= 50% hardwood before):\n")
-print(as.data.frame(funnel), row.names = FALSE)
+  ) %>%
+  as.data.frame()
+funnel
 
-cat("\nQualifying patches by Level III region:\n")
-print(as.data.frame(pts_df %>% filter(qualifies) %>% count(na_l2code, us_l3code, us_l3name)),
-      row.names = FALSE)
+# Qualifying patches by Level III region
 q <- pts_df %>% filter(qualifies)
-cat(sprintf("\nQualifying patches in total: %d\n", nrow(q)))
-cat(sprintf("  crossing an ecoregion boundary: %d", sum(q$crosses_ecoregion)))
-if (any(q$crosses_ecoregion)) {
-  cat(sprintf(" (median share in the ecoregion they were assigned to: %.2f)",
-              median(q$eco_share[q$crosses_ecoregion], na.rm = TRUE)))
-}
-cat(sprintf("\n  could have been cut off at a job edge: %d\n", sum(q$possibly_cut_off)))
+by_l3 <- q %>% count(na_l2code, us_l3code, us_l3name) %>% as.data.frame()
+by_l3
+
+# Qualifying patches in total, how many cross an ecoregion boundary (and the
+# median share in the ecoregion they were assigned to), and how many could
+# have been cut off at a job edge
+q_summary <- data.frame(
+  qualifying       = nrow(q),
+  cross_boundary   = sum(q$crosses_ecoregion),
+  median_eco_share = median(q$eco_share[q$crosses_ecoregion], na.rm = TRUE),
+  possibly_cut_off = sum(q$possibly_cut_off))
+q_summary
 
 inc  <- eco %>% filter(included)
 qpts <- st_as_sf(q, coords = c("lon", "lat"), crs = 4326) %>% st_transform(5070)
-p <- ggplot() +
-  geom_sf(data = inc, aes(fill = na_l2name), color = "grey50", linewidth = 0.1, alpha = 0.3) +
-  geom_sf(data = qpts, color = "darkgreen", size = 0.05, alpha = 0.3) +
-  labs(title = "Qualifying forest loss patches in the study area",
-       subtitle = sprintf(">= %d ha, lost %d-%d, >= %.0f%% hardwood before, not converted (n = %d)",
-                          MIN_FIND_HA, LOSS_YEAR_MIN, LOSS_YEAR_MAX, 100 * DECID_THRESHOLD, nrow(q)),
-       fill = "Level II ecoregion") +
-  theme_minimal()
-print(p)
-ggsave(file.path(outDir, paste0("map_qualifying_patches", tag, ".png")), p, width = 12, height = 8.5, dpi = 200)
 
-cat("\nDone. Files in", outDir, "(names end in _TEST for a test run):\n",
-    " patches_all_labeled.csv   (every patch in the study area, with its rules)\n",
-    " patches_qualifying.gpkg   (polygons of the qualifying patches)\n",
-    " map_qualifying_patches.png\n",
-    paste0(" by_tile_", RUN_TAG, "/            (raw download for each tile)\n"))
-if (TEST_RUN) {
-  cat("\nTEST RUN finished. If the numbers look sensible, set TEST_RUN <- FALSE and Source again.\n")
-} else if (length(missing) == 0) {
-  cat("Next: patch_step2_size_distribution.R\n")
-}t
+ggplot(data=qpts) +
+  geom_sf(data=inc, aes(fill=na_l2name), color="grey50", linewidth=0.1, alpha=0.3) + # included ecoregions, colored by Level II
+  geom_sf(color="darkgreen", size=0.05, alpha=0.3) + # one dot per qualifying patch
+  theme_bw() +
+  labs(title="Qualifying forest loss patches in the study area",
+       subtitle="Each dot is one patch that meets the Step 1 rules",
+       fill="Level II ecoregion")
 
+ggsave(file.path(outDir, paste0("map_qualifying_patches", tag, ".png")), width=12, height=8.5, dpi=200)

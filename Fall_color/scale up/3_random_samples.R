@@ -1,11 +1,16 @@
 # Patch Step 3: draw a repeatable random sample of 100 patches
 # -----------------------------------------------------------------------------
-# Runs entirely in R (no Earth Engine). Open in RStudio and click "Source".
+#  Run line by line or use
+# Source with Echo so the tables and plots show. 
 # Needs: sf, dplyr, ggplot2
 # Reads:  scaleup_patches/patches_all_labeled.csv     (Patch Step 1)
 #         scaleup_patches/ecoregion_list.csv          (Patch Step 0, which ecoregions are in)
 #         scaleup_patches/patches_qualifying.gpkg     (Patch Step 1, polygons)
 #         scaleup_patches/boundary_ecoregions.gpkg    (Patch Step 0, for the map)
+# Saves:  sample_patches.csv / .gpkg     the 100 patches + 100 replacements
+#         sample_pool_ordered.csv        every eligible patch, in random order
+#         patch_modis_pixel_cover.csv    MODIS-pixel check for each patch
+#         map_sample_patches.png, sample_vs_pool_size.png, sample_vs_pool_year.png
 #
 # What it does:
 #   1. Starts from the qualifying patches at least MIN_SAMPLE_HA
@@ -70,18 +75,15 @@ pt   <- read.csv(file.path(outDir, "patches_all_labeled.csv"))
 pool <- pt %>% filter(qualifies, area_ha >= MIN_SAMPLE_HA)
 
 # Follow Step 0's CURRENT list of included ecoregions. Leaving ecoregions out
-# in Step 0 (ALSO_EXCLUDE_L3) works here without re-running Step 1. Adding
-# ecoregions in Step 0 does need Step 1 re-run, since their patches were never found.
+# in Step 0 still works without re-running
+# Step 1.If ecoregions are added in Step 0 rerun Step 1. 
 eco_list  <- read.csv(file.path(outDir, "ecoregion_list.csv"))
 inc_codes <- as.character(eco_list$us_l3code[as.logical(eco_list$included)])
 left_out  <- pool %>% filter(!(as.character(us_l3code) %in% inc_codes))
-if (nrow(left_out) > 0) {
-  cat(sprintf("\nLeaving out %d patches in ecoregions no longer in the study area (Step 0):\n",
-              nrow(left_out)))
-  print(table(paste(left_out$us_l3code, left_out$us_l3name)))
-}
+table(paste(left_out$us_l3code, left_out$us_l3name))   # patches left out: their ecoregion is no longer in the study area
+
 pool <- pool %>% filter(as.character(us_l3code) %in% inc_codes)
-cat(sprintf("\nQualifying patches >= %g ha in the study area: %d\n", MIN_SAMPLE_HA, nrow(pool)))
+nrow(pool)   # qualifying patches >= MIN_SAMPLE_HA in the study area
 
 # ---- 2. MODIS rule: covers >= half of at least one MODIS pixel --------------
 # A patch smaller than half a pixel (~10.7 ha) can't pass, so skip those.
@@ -90,15 +92,15 @@ need <- pool$patch_id[pool$area_ha >= MIN_PIXEL_FRAC * PX^2 / 1e4]
 cover <- if (file.exists(cover_file)) read.csv(cover_file) else
   data.frame(patch_id = character(), max_pixel_frac = numeric())
 todo <- setdiff(need, cover$patch_id)
+length(todo)   # patches still to check against the MODIS grid (0 = all saved from before)
 
 if (length(todo) > 0) {
-  cat(sprintf("Checking %d patches against the MODIS grid (saved for next time)...\n", length(todo)))
   poly <- st_read(file.path(outDir, "patches_qualifying.gpkg"), quiet = TRUE)
   poly <- poly[poly$patch_id %in% todo, "patch_id"] %>% st_make_valid() %>% st_transform(SINU)
   chunks <- split(seq_len(nrow(poly)), ceiling(seq_len(nrow(poly)) / 2000))
   for (k in seq_along(chunks)) {
     cover <- bind_rows(cover, pixel_cover(poly[chunks[[k]], ]))
-    cat(sprintf("  %d of %d done\n", min(k * 2000, nrow(poly)), nrow(poly)))
+    message(sprintf("  %d of %d done", min(k * 2000, nrow(poly)), nrow(poly)))   # progress inside the loop
   }
   cover <- cover %>% distinct(patch_id, .keep_all = TRUE)
   write.csv(cover, cover_file, row.names = FALSE)
@@ -109,17 +111,19 @@ pool <- pool %>%
   mutate(max_pixel_frac = coalesce(max_pixel_frac, 0),
          modis_ok       = max_pixel_frac >= MIN_PIXEL_FRAC)
 
-cat(sprintf("\nPatches covering >= %.0f%% of at least one MODIS pixel, by size:\n", 100 * MIN_PIXEL_FRAC))
-print(as.data.frame(pool %>%
-                      mutate(size = cut(area_ha, c(0, 25, 50, 100, 250, Inf), right = FALSE,
-                                        labels = c("under 25 ha", "25-50 ha", "50-100 ha", "100-250 ha", "over 250 ha"))) %>%
-                      group_by(size) %>%
-                      summarise(patches = n(), pass = sum(modis_ok),
-                                pct_pass = round(100 * mean(modis_ok), 1), .groups = "drop")))
+# Patches covering >= half of at least one MODIS pixel, by size
+modis_by_size <- pool %>%
+  mutate(size = cut(area_ha, c(0, 25, 50, 100, 250, Inf), right = FALSE,
+                    labels = c("under 25 ha", "25-50 ha", "50-100 ha", "100-250 ha", "over 250 ha"))) %>%
+  group_by(size) %>%
+  summarise(patches = n(), pass = sum(modis_ok),
+            pct_pass = round(100 * mean(modis_ok), 1), .groups = "drop") %>%
+  as.data.frame()
+modis_by_size
 
 pool <- pool %>% filter(modis_ok)
-cat(sprintf("\nPool (eligible for the sample): %d patches\n", nrow(pool)))
-print(table(pool$na_l2name))
+nrow(pool)               # the pool: patches eligible for the sample
+table(pool$na_l2name)    # the pool by Level II region
 if (nrow(pool) < N_SAMPLE + N_REPLACEMENTS) {
   stop("Only ", nrow(pool), " eligible patches; lower MIN_SAMPLE_HA or N_SAMPLE.", call. = FALSE)
 }
@@ -142,50 +146,46 @@ write.csv(pool, file.path(outDir, "sample_pool_ordered.csv"), row.names = FALSE)
 smp <- pool %>% filter(role != "Not drawn")
 write.csv(smp, file.path(outDir, "sample_patches.csv"), row.names = FALSE)
 
-cat("\nSampled patches by Level II region:\n")
-print(table(smp$na_l2name, smp$role))
-cat("\nSampled patches by Level III region:\n")
-print(sort(table(smp$us_l3name[smp$role == "Sample"]), decreasing = TRUE))
+table(smp$na_l2name, smp$role)   # sampled patches by Level II region
+sort(table(smp$us_l3name[smp$role == "Sample"]), decreasing = TRUE)   # sampled patches by Level III region
 
 # ---- 4. Map + "does the sample look like the pool?" -------------------------
 eco <- st_read(file.path(outDir, "boundary_ecoregions.gpkg"), quiet = TRUE)
 pool_sf <- st_as_sf(pool, coords = c("lon", "lat"), crs = 4326) %>% st_transform(5070)
 
-p_map <- ggplot() +
-  geom_sf(data = eco, aes(fill = na_l2name), color = "grey60", linewidth = 0.1, alpha = 0.3) +
-  geom_sf(data = filter(pool_sf, role == "Not drawn"), color = "grey55", size = 0.15, alpha = 0.4) +
-  geom_sf(data = filter(pool_sf, role == "Replacement"), color = "orange", size = 1.3) +
-  geom_sf(data = filter(pool_sf, role == "Sample"), color = "red", size = 1.6) +
-  labs(title = sprintf("Random sample of %d patches (red), %d replacements (orange)",
-                       N_SAMPLE, N_REPLACEMENTS),
-       subtitle = sprintf(paste0("Grey = all %d eligible patches: >= %g ha and covering >= %.0f%% ",
-                                 "of a MODIS pixel. Seed = %d."),
-                          nrow(pool), MIN_SAMPLE_HA, 100 * MIN_PIXEL_FRAC, SEED),
-       fill = "Level II ecoregion") +
-  theme_minimal()
-print(p_map)
-ggsave(file.path(outDir, "map_sample_patches.png"), p_map, width = 11, height = 8, dpi = 200)
+ggplot(data=eco) +
+  geom_sf(aes(fill=na_l2name), color="grey60", linewidth=0.1, alpha=0.3) + # study area, colored by Level II
+  geom_sf(data=filter(pool_sf, role=="Not drawn"), aes(color=role), size=0.15, alpha=0.4) + # every other eligible patch
+  geom_sf(data=filter(pool_sf, role=="Replacement"), aes(color=role), size=1.3) +
+  geom_sf(data=filter(pool_sf, role=="Sample"), aes(color=role), size=1.6) +
+  scale_color_manual(name="Patch", values=c("Sample"="red", "Replacement"="orange", "Not drawn"="grey55")) +
+  theme_bw() +
+  labs(title="Random sample of forest loss patches", fill="Level II ecoregion")
+
+ggsave(file.path(outDir, "map_sample_patches.png"), width=11, height=8, dpi=200)
 
 check <- bind_rows(
   pool %>% mutate(set = "All eligible"),
   pool %>% filter(role == "Sample") %>% mutate(set = "Sample")
 )
-p_chk <- ggplot(check, aes(x = set, y = area_ha, fill = set)) +
-  geom_boxplot(outlier.size = 0.4) +
-  scale_y_log10() +
-  scale_fill_manual(values = c("All eligible" = "grey70", "Sample" = "red"), guide = "none") +
-  labs(title = "Patch size: sample vs. everything it was drawn from",
-       subtitle = "The boxes should look alike.", x = NULL, y = "Patch size (ha, log scale)") +
-  theme_minimal()
-ggsave(file.path(outDir, "sample_vs_pool_size.png"), p_chk, width = 6, height = 5, dpi = 200)
 
-p_yr <- ggplot(check, aes(x = loss_year, fill = set)) +
-  geom_histogram(aes(y = after_stat(density)), binwidth = 1, position = "identity", alpha = 0.5) +
-  scale_fill_manual(values = c("All eligible" = "grey50", "Sample" = "red"), name = NULL) +
-  labs(title = "Year of loss: sample vs. everything it was drawn from",
-       x = "Year of loss", y = "Share of patches") +
-  theme_minimal()
-ggsave(file.path(outDir, "sample_vs_pool_year.png"), p_yr, width = 8, height = 5, dpi = 200)
+ggplot(data=check) +
+  geom_boxplot(aes(x=set, y=area_ha, fill=set), outlier.size=0.4) +
+  scale_y_log10() +
+  scale_fill_manual(values=c("All eligible"="grey70", "Sample"="red"), guide="none") +
+  theme_bw() +
+  labs(title="Patch size: sample vs. everything it was drawn from",
+       subtitle="The boxes should look alike.", x=NULL, y="Patch size (ha, log scale)")
+
+ggsave(file.path(outDir, "sample_vs_pool_size.png"), width=6, height=5, dpi=200)
+
+ggplot(data=check) +
+  geom_histogram(aes(x=loss_year, y=after_stat(density), fill=set), binwidth=1, position="identity", alpha=0.5) +
+  scale_fill_manual(name="", values=c("All eligible"="grey50", "Sample"="red")) +
+  theme_bw() +
+  labs(title="Year of loss: sample vs. everything it was drawn from", x="Year of loss", y="Share of patches")
+
+ggsave(file.path(outDir, "sample_vs_pool_year.png"), width=8, height=5, dpi=200)
 
 # ---- 5. Save the sampled patch polygons for Step 4 --------------------------
 poly_all <- st_read(file.path(outDir, "patches_qualifying.gpkg"), quiet = TRUE)
@@ -199,10 +199,3 @@ if (nrow(smp_poly) != nrow(smp)) {
        "Was Patch Step 1 re-run after this sample was drawn?", call. = FALSE)
 }
 st_write(smp_poly, file.path(outDir, "sample_patches.gpkg"), delete_dsn = TRUE, quiet = TRUE)
-
-cat("\nDone. Files in", outDir, ":\n",
-    " sample_patches.csv / .gpkg (the", N_SAMPLE, "patches +", N_REPLACEMENTS, "replacements)\n",
-    " sample_pool_ordered.csv   (every eligible patch, in random order)\n",
-    " patch_modis_pixel_cover.csv (MODIS-pixel check for each patch)\n",
-    " map_sample_patches.png, sample_vs_pool_size.png, sample_vs_pool_year.png\n",
-    "Next: patch_step4_timeseries.R\n")
